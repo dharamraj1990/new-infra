@@ -98,7 +98,7 @@ resources:
   # ── Lambda ─────────────────────────────────────────────────────────────────
   - name:    image-processor
     type:    lambda
-    enabled: false
+    enabled: true
     config:
       package_type:       zip
       runtime:            python3.12
