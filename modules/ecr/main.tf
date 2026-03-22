@@ -41,8 +41,7 @@ data "aws_iam_policy_document" "ecr_policy" {
     effect = "Allow"
     principals {
       type        = "AWS"
-      identifiers = length(var.allowed_principal_arns) > 0 ? var.allowed_principal_arns : ["arn:aws:iam::${data.aws_caller_identity.current.account_id
-    }:root"]
+      identifiers = length(var.allowed_principal_arns) > 0 ? var.allowed_principal_arns : ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
     }
     actions = ["ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage", "ecr:BatchCheckLayerAvailability"]
   }

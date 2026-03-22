@@ -111,12 +111,8 @@ variable "vpc_id" {
 
 variable "subnet_id" {
   type        = string
-  description = "Subnet ID for the instance — required for standalone instances"
-
-  validation {
-    condition     = var.subnet_id != ""
-    error_message = "subnet_id is required. Specify the subnet for the instance."
-  }
+  default     = ""
+  description = "Subnet ID for the instance — required for standalone instances (ignored when asg_enabled=true)"
 }
 
 variable "ingress_rules" {

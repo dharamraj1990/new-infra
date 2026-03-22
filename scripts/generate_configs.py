@@ -321,6 +321,7 @@ inputs = {{
   memory_size         = {cfg.get("memory",512)}
   log_retention_days  = {cfg.get("log_retention_days",14)}
   iam_role_create     = {str(cfg.get("iam_role_create",True)).lower()}
+  iam_role_arn        = "{cfg.get("iam_role_arn","")}"
   vpc_enabled         = {str(cfg.get("vpc_enabled",False)).lower()}
   service_access      = {svc}
   permission_boundary = "{cfg.get("permission_boundary","")}"
@@ -413,6 +414,7 @@ inputs = {{
 {ebs_hcl}
   prometheus_monitoring = {str(cfg.get("prometheus_monitoring", False)).lower()}
   argus_monitoring      = {str(cfg.get("argus_monitoring", False)).lower()}
+  user_data             = "{cfg.get("user_data","")}"
 {extra_tags_hcl(cfg)}
 }}
 """
@@ -518,6 +520,8 @@ inputs = {{
   geo_restriction_type      = "{geo_type}"
   geo_restriction_locations = {geo_locations}
   acm_certificate_arn    = "{cfg.get("acm_certificate_arn","")}"
+  aliases                = {json.dumps(cfg.get("aliases",[]))}
+  default_root_object    = "{cfg.get("default_root_object","index.html")}"
 {origins_hcl}
 {behaviors_hcl}
 {extra_tags_hcl(cfg)}

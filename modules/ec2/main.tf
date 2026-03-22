@@ -242,6 +242,10 @@ resource "aws_instance" "this" {
   lifecycle {
     # Prevent destroy when Terraform detects a new AMI or launch template version
     ignore_changes = [ami, launch_template]
+    precondition {
+      condition     = var.subnet_id != ""
+      error_message = "subnet_id is required for standalone instances (asg_enabled=false)."
+    }
   }
 }
 

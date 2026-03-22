@@ -138,6 +138,17 @@ resource "aws_security_group" "this" {
   count  = var.vpc_enabled && var.sg_create ? 1 : 0
   name   = "${local.function_name}-sg"
   vpc_id = var.vpc_id
+
+  lifecycle {
+    precondition {
+      condition     = var.vpc_id != ""
+      error_message = "vpc_id is required when vpc_enabled=true."
+    }
+    precondition {
+      condition     = length(var.subnet_ids) > 0
+      error_message = "subnet_ids must have at least one subnet when vpc_enabled=true."
+    }
+  }
   egress {
     from_port   = 0
     to_port     = 0

@@ -52,6 +52,13 @@ resource "aws_sqs_queue" "this" {
   }) : null
 
   tags = local.tags
+
+  lifecycle {
+    precondition {
+      condition     = !var.high_throughput_fifo || var.fifo
+      error_message = "high_throughput_fifo requires fifo=true."
+    }
+  }
 }
 
 # ── Queue Policy ──────────────────────────────────────────────────────────────

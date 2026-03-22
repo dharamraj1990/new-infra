@@ -161,6 +161,14 @@ jobs:
       - name: Generate configs
         run: python3 scripts/generate_configs.py input.yaml . --account "${{ needs.resolve.outputs.account }}"
 
+      - name: Check for enabled resources
+        run: |
+          if [ ! -s generated_modules.txt ]; then
+            echo "::error::No enabled resources found in input.yaml — nothing to deploy."
+            exit 1
+          fi
+          echo "Found $(wc -l < generated_modules.txt | tr -d ' ') enabled resource(s)"
+
       - name: Terragrunt validate
         run: |
           FAILED=0

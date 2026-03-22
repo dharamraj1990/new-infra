@@ -141,12 +141,14 @@ variable "vpc_enabled" {
   default = false
 }
 variable "vpc_id" {
-  type    = string
-  default = ""
+  type        = string
+  default     = ""
+  description = "VPC ID — required when vpc_enabled=true"
 }
 variable "subnet_ids" {
-  type    = list(string)
-  default = []
+  type        = list(string)
+  default     = []
+  description = "Subnet IDs for Lambda ENIs — required when vpc_enabled=true"
 }
 variable "sg_create" {
   type    = bool

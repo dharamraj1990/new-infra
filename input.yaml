@@ -108,11 +108,17 @@ resources:
       memory:             512
       log_retention_days: 14
       iam_role_create:    true
+      # iam_role_arn:     "arn:aws:iam::123456789012:role/my-lambda-role"  # use existing role (set iam_role_create: false)
       service_access:     [s3, ssm]
       # Scope IAM to specific resources (empty = all, which is NOT recommended)
       # s3_resource_arns:  ["arn:aws:s3:::my-bucket"]
       # ssm_resource_arns: ["arn:aws:ssm:ap-south-1:*:parameter/myapp/*"]
       vpc_enabled:        false
+      # VPC config (required when vpc_enabled: true):
+      # vpc_id:           "vpc-0abc123def456"
+      # subnet_ids:       ["subnet-0aaa111", "subnet-0bbb222"]
+      # sg_create:        true
+      # existing_sg_ids:  []
       environment_variables:
         LOG_LEVEL: INFO
       permission_boundary: ""
@@ -130,6 +136,7 @@ resources:
       memory:             1024
       log_retention_days: 14
       iam_role_create:    true
+      # iam_role_arn:     ""  # use existing role (set iam_role_create: false)
       service_access:     [sqs, dynamodb]
       # Scope IAM to specific resources
       # sqs_resource_arns:      ["arn:aws:sqs:ap-south-1:*:my-queue"]
@@ -201,6 +208,11 @@ resources:
       existing_instance_profile: ""
       imdsv2_enabled:            true
 
+      # ── User data (bootstrap script, plain text) ────────────────────────
+      # user_data: |
+      #   #!/bin/bash
+      #   yum update -y
+
       # ── EC2 monitoring integrations ──────────────────────────────────────
       prometheus_monitoring: true
       argus_monitoring:      false
@@ -232,6 +244,11 @@ resources:
         waf_web_acl_id:     ""        # ARN of existing WAF ACL (when create: false)
         rate_limit_enabled: true
         rate_limit:         2000      # max requests per 5 minutes per IP
+
+      # Custom domain aliases (requires ACM certificate)
+      # aliases:             ["cdn.example.com"]
+      # acm_certificate_arn: "arn:aws:acm:us-east-1:123456789012:certificate/xxx"
+      default_root_object: "index.html"
 
       logging_enabled:     false
       logging_bucket_name: ""
