@@ -61,7 +61,7 @@ terraform apply \
 |---|---|
 | `MGMT_ACCOUNT_ID` | Management account 12-digit ID |
 | `MGMT_ROLE_NAME` | `github-oidc-role` |
-| `INFRACOST_API_KEY` | From infracost.io (optional) |
+| ~~`INFRACOST_API_KEY`~~ | **Removed** — cost estimation now uses AWS Pricing API via boto3 (no third-party) |
 
 ### 4. Add GitHub Variables
 
