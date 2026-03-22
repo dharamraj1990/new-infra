@@ -116,10 +116,6 @@ variable "secretsmanager_resource_arns" {
   description = "Secrets Manager secret ARNs to scope access to. Empty = all secrets."
 }
 
-variable "account_id" {
-  type    = string
-  default = ""
-}
 variable "iam_role_create" {
   type    = bool
   default = true

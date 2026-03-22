@@ -65,6 +65,7 @@ jobs:
 
       - name: Auth — target
         run: |
+          set -eo pipefail
           ACCOUNT_ID=$(python3 scripts/get_account_info.py "${{ matrix.account }}" account_id)
           ROLE_NAME=$(python3 scripts/get_account_info.py  "${{ matrix.account }}" role_name)
           CREDS=$(aws sts assume-role \

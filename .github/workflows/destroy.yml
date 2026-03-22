@@ -76,6 +76,7 @@ jobs:
       - name: Resolve account info
         id: info
         run: |
+          set -e
           ACCOUNT="${{ github.event.inputs.account }}"
           ENV=$(python3 scripts/get_account_info.py "$ACCOUNT" environment)
           REGION=$(python3 scripts/get_account_info.py "$ACCOUNT" region)
@@ -144,6 +145,7 @@ jobs:
 
       - name: Auth — assume target account role
         run: |
+          set -eo pipefail
           ACCOUNT="${{ needs.resolve.outputs.account }}"
           ACCOUNT_ID=$(python3 scripts/get_account_info.py "$ACCOUNT" account_id)
           ROLE_NAME=$(python3 scripts/get_account_info.py  "$ACCOUNT" role_name)
@@ -178,7 +180,7 @@ jobs:
           echo "Resources to destroy:"
           while IFS= read -r p; do
             [ -z "$p" ] && continue
-            echo "  - $(basename $(dirname $p))"
+            echo "  - $(basename "$(dirname "$p")")"
           done < generated_modules.txt
 
       - name: Terragrunt destroy (reverse order)

@@ -32,9 +32,14 @@ if account_key not in data:
     print(f"Available keys: {', '.join(data.keys())}", file=sys.stderr)
     sys.exit(1)
 
-val = data[account_key].get(field, "")
-if not val:
-    print(f"ERROR: field '{field}' is empty or missing for account '{account_key}'", file=sys.stderr)
+if field not in data[account_key]:
+    print(f"ERROR: field '{field}' not found for account '{account_key}'", file=sys.stderr)
+    print(f"Available fields: {', '.join(data[account_key].keys())}", file=sys.stderr)
+    sys.exit(1)
+
+val = data[account_key][field]
+if val is None or val == "":
+    print(f"ERROR: field '{field}' is empty for account '{account_key}'", file=sys.stderr)
     sys.exit(1)
 
 print(val)

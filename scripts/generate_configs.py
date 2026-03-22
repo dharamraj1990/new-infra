@@ -21,15 +21,36 @@ import sys, json, yaml, argparse
 from pathlib import Path
 
 
+def hcl_escape(val) -> str:
+    """Escape a value for safe embedding in HCL quoted strings."""
+    return str(val).replace('\\', '\\\\').replace('"', '\\"')
+
+
 def load_accounts(repo_root):
     accounts_path = Path(repo_root) / "accounts" / "accounts.yaml"
-    with open(accounts_path) as f:
-        return yaml.safe_load(f)
+    try:
+        with open(accounts_path) as f:
+            data = yaml.safe_load(f)
+        if not isinstance(data, dict):
+            print(f"[ERROR] accounts.yaml must be a YAML mapping, got {type(data).__name__}")
+            sys.exit(1)
+        return data
+    except (yaml.YAMLError, FileNotFoundError) as e:
+        print(f"[ERROR] Failed to read accounts.yaml: {e}")
+        sys.exit(1)
 
 
 def load_input(path="input.yaml"):
-    with open(path) as f:
-        return yaml.safe_load(f)
+    try:
+        with open(path) as f:
+            data = yaml.safe_load(f)
+        if not isinstance(data, dict):
+            print(f"[ERROR] {path} must be a YAML mapping, got {type(data).__name__}")
+            sys.exit(1)
+        return data
+    except (yaml.YAMLError, FileNotFoundError) as e:
+        print(f"[ERROR] Failed to read {path}: {e}")
+        sys.exit(1)
 
 
 def resource_dir(repo_root, env, rtype, rname):
@@ -38,7 +59,7 @@ def resource_dir(repo_root, env, rtype, rname):
 
 def mock_dep(dep_var, dep_path, mock_outputs: dict):
     """Dependency block — mocks used only for validate/plan/destroy, NEVER apply."""
-    lines = "\n".join(f'    {k} = "{v}"' for k, v in mock_outputs.items())
+    lines = "\n".join(f'    {k} = "{hcl_escape(v)}"' for k, v in mock_outputs.items())
     return f"""dependency "{dep_var}" {{
   config_path = "{dep_path}"
   mock_outputs_allowed_terraform_commands = ["validate", "plan", "destroy"]
@@ -55,7 +76,7 @@ def extra_tags_hcl(cfg: dict, indent: int = 2) -> str:
         return " " * indent + 'extra_tags = {}'
     pad   = " " * indent
     inner = " " * (indent + 2)
-    lines = "\n".join(f'{inner}{k} = "{v}"' for k, v in tags.items())
+    lines = "\n".join(f'{inner}{k} = "{hcl_escape(v)}"' for k, v in tags.items())
     return f"{pad}extra_tags = {{\n{lines}\n{pad}}}"
 
 
@@ -83,10 +104,11 @@ def gen_s3(r, ctx):
     lambda_inputs = ""
 
     if trigger_active:
+        region   = ctx["region"]
         dep_var  = f"lambda_{lambda_name.replace('-','_')}"
         dep_path = f"../lambda-{lambda_name}"
         dep_block = mock_dep(dep_var, dep_path, {
-            "function_arn":       "arn:aws:lambda:ap-south-1:000000000000:function:placeholder",
+            "function_arn":       f"arn:aws:lambda:{region}:000000000000:function:placeholder",
             "execution_role_arn": "arn:aws:iam::000000000000:role/placeholder",
         })
         events_json = json.dumps(lt.get("events", ["s3:ObjectCreated:*"]))
@@ -227,6 +249,7 @@ def gen_lambda(r, ctx):
     cfg      = r.get("config", {})
     pkg      = cfg.get("package_type", "zip")
     ecr_name = cfg.get("ecr_name", r["name"])
+    region   = ctx["region"]
 
     dep_blocks   = []
     extra_inputs = []
@@ -237,7 +260,7 @@ def gen_lambda(r, ctx):
             dep_var  = f"ecr_{ecr_name.replace('-','_')}"
             dep_path = f"../ecr-{ecr_name}"
             dep_blocks.append(mock_dep(dep_var, dep_path, {
-                "repository_url": "000000000000.dkr.ecr.ap-south-1.amazonaws.com/placeholder",
+                "repository_url": f"000000000000.dkr.ecr.{region}.amazonaws.com/placeholder",
             }))
             extra_inputs.append(
                 f'  image_uri = "${{dependency.{dep_var}.outputs.repository_url}}:latest"'
@@ -252,8 +275,8 @@ def gen_lambda(r, ctx):
         dep_var  = f"sqs_{sqs_name.replace('-','_')}"
         dep_path = f"../sqs-{sqs_name}"
         dep_blocks.append(mock_dep(dep_var, dep_path, {
-            "queue_arn": "arn:aws:sqs:ap-south-1:000000000000:placeholder",
-            "queue_url": "https://sqs.ap-south-1.amazonaws.com/000000000000/placeholder",
+            "queue_arn": f"arn:aws:sqs:{region}:000000000000:placeholder",
+            "queue_url": f"https://sqs.{region}.amazonaws.com/000000000000/placeholder",
         }))
         extra_inputs.append("  sqs_trigger_enabled = true")
         extra_inputs.append(f"  sqs_queue_arn       = dependency.{dep_var}.outputs.queue_arn")
@@ -268,7 +291,7 @@ def gen_lambda(r, ctx):
         dep_var  = f"sns_{sns_name.replace('-','_')}"
         dep_path = f"../sns-{sns_name}"
         dep_blocks.append(mock_dep(dep_var, dep_path, {
-            "topic_arn": "arn:aws:sns:ap-south-1:000000000000:placeholder",
+            "topic_arn": f"arn:aws:sns:{region}:000000000000:placeholder",
         }))
         extra_inputs.append("  sns_trigger_enabled = true")
         extra_inputs.append(f"  sns_topic_arn       = dependency.{dep_var}.outputs.topic_arn")
@@ -279,7 +302,7 @@ def gen_lambda(r, ctx):
     env_vars = cfg.get("environment_variables", {})
     env_hcl  = "  environment_variables = {}"
     if env_vars:
-        items   = "\n".join(f'    {k} = "{v}"' for k, v in env_vars.items())
+        items   = "\n".join(f'    {k} = "{hcl_escape(v)}"' for k, v in env_vars.items())
         env_hcl = f"  environment_variables = {{\n{items}\n  }}"
 
     vpc_inputs = ""
@@ -441,13 +464,13 @@ def gen_cloudfront(r, ctx):
             dep_var  = f"s3_{s3_bucket.replace('-','_')}"
             dep_path = f"../s3-{s3_bucket}"
             dep_blocks.append(mock_dep(dep_var, dep_path, {
-                "bucket_domain_name": "placeholder.s3.ap-south-1.amazonaws.com",
+                "bucket_domain_name": f"placeholder.s3.{ctx['region']}.amazonaws.com",
                 "bucket_name":        "placeholder-bucket",
             }))
             domain_val = f"${{dependency.{dep_var}.outputs.bucket_domain_name}}"
         elif s3_bucket:
-            # S3 disabled — compute domain from naming convention
-            domain_val = f"{ctx['env']}-{ctx['region']}-{ctx['project']}-s3-{s3_bucket}.s3.{ctx['region']}.amazonaws.com"
+            # S3 disabled — compute domain from naming convention (name_prefix, not env)
+            domain_val = f"{ctx['name_prefix']}-{ctx['region']}-{ctx['project']}-s3-{s3_bucket}.s3.{ctx['region']}.amazonaws.com"
         else:
             domain_val = domain
 
@@ -560,7 +583,14 @@ def main():
 
     data          = load_input(args.input_file)
     all_resources = data.get("resources", [])
-    enabled       = [r for r in all_resources if r.get("enabled", True)]
+    if not isinstance(all_resources, list):
+        print("[ERROR] 'resources' in input.yaml must be a list")
+        sys.exit(1)
+    for i, r in enumerate(all_resources):
+        if not isinstance(r, dict) or "type" not in r or "name" not in r:
+            print(f"[ERROR] Resource at index {i} must be a dict with 'type' and 'name' keys")
+            sys.exit(1)
+    enabled = [r for r in all_resources if r.get("enabled", True)]
 
     # Account key comes from --account CLI arg (set by CI from workflow dropdown).
     # Falls back to data["account"] for local runs where input.yaml still has the key.
@@ -573,13 +603,15 @@ def main():
     if account_key not in accounts:
         print(f"[ERROR] Account key '{account_key}' not found in accounts/accounts.yaml")
         sys.exit(1)
-    acct    = accounts[account_key]
-    env     = acct["environment"]
-    region  = acct["region"]
-    project = acct.get("project_name", acct.get("project", ""))
+    acct        = accounts[account_key]
+    env         = acct["environment"]
+    region      = acct["region"]
+    project     = acct.get("project_name", acct.get("project", ""))
+    name_prefix = acct.get("name_prefix", env)
 
     ctx = build_trigger_context(all_resources)
-    ctx.update({"env": env, "region": region, "project": project, "all_resources": all_resources})
+    ctx.update({"env": env, "region": region, "project": project,
+                "name_prefix": name_prefix, "all_resources": all_resources})
 
     # Apply order: dependencies before dependents
     TYPE_ORDER = {"ecr": 0, "sns": 1, "sqs": 2, "lambda": 3, "s3": 4, "ec2": 5, "cloudfront": 6}
