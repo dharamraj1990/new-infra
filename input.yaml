@@ -1,0 +1,240 @@
+# =============================================================================
+# input.yaml — SINGLE source of truth.
+# Switch projects by changing "account" key (matches accounts/accounts.yaml).
+# All metadata tags flow to every resource automatically.
+# =============================================================================
+
+
+# ── Metadata — applied as tags to ALL resources ────────────────────────────
+metadata:
+  stage:      stg              # e.g. dev | stg | prod | sandbox | perf
+  owner:      platform-team    # team/person responsible
+  component:  backend          # logical component: backend | frontend | data | infra
+  cost_center: "CC-1001"       # billing/cost allocation code
+  # Any additional tags applied to ALL resources
+  extra_tags:
+    Terraform:    "true"
+    Repo:         "infra-frame-work"
+    Compliance:   "pci-dss"
+
+resources:
+
+  # ── S3 ─────────────────────────────────────────────────────────────────────
+  - name:    app-assets
+    type:    s3
+    enabled: true
+    config:
+      bucket_type:            standard
+      versioning:             true
+      encryption:             AES256
+      kms_key_arn:            ""
+      lifecycle_enabled:      true
+      intelligent_tiering:    true
+      expiry_days:            0
+      access_log_bucket_name: ""
+      lambda_trigger:
+        enabled:       true
+        lambda_name:   image-processor
+        events:        ["s3:ObjectCreated:*"]
+        filter_prefix: "uploads/"
+        filter_suffix: ".jpg"
+      # Per-resource extra tags (merged on top of global metadata.extra_tags)
+      extra_tags:
+        DataClassification: internal
+
+  - name:    audit-logs
+    type:    s3
+    enabled: false
+    config:
+      bucket_type:            logging
+      versioning:             false
+      encryption:             AES256
+      lifecycle_enabled:      true
+      intelligent_tiering:    false
+      expiry_days:            90
+      access_log_bucket_name: ""
+      extra_tags:
+        DataClassification: restricted
+        Retention: "90days"
+
+  # ── SNS ────────────────────────────────────────────────────────────────────
+  - name:    order-events
+    type:    sns
+    enabled: false
+    config:
+      fifo:         false
+      display_name: "Order Events Topic"
+      kms_key_arn:  "alias/aws/sns"   # encrypted by default
+      subscriptions:
+        - protocol: email
+          endpoint: ops@op2mise.com
+      extra_tags:
+        Component: messaging
+
+  # ── SQS ────────────────────────────────────────────────────────────────────
+  - name:    order-queue
+    type:    sqs
+    enabled: false
+    config:
+      fifo:                        false
+      content_based_deduplication: false
+      high_throughput_fifo:        false
+      visibility_timeout:          30
+      message_retention:           86400
+      max_message_size:            262144
+      delay_seconds:               0
+      receive_wait_time_seconds:   0
+      sqs_managed_sse_enabled:     true    # SSE-SQS encryption (zero-config)
+      dlq_enabled:                 true
+      dlq_max_receive_count:       3
+      dlq_message_retention:       1209600
+      lambda_trigger:
+        enabled:     true
+        lambda_name: order-processor
+        batch_size:  10
+      extra_tags:
+        Component: messaging
+
+  # ── Lambda ─────────────────────────────────────────────────────────────────
+  - name:    image-processor
+    type:    lambda
+    enabled: false
+    config:
+      package_type:       zip
+      runtime:            python3.12
+      handler:            handler.main
+      arch:               arm64
+      timeout:            30
+      memory:             512
+      log_retention_days: 14
+      iam_role_create:    true
+      service_access:     [s3, ssm]
+      # Scope IAM to specific resources (empty = all, which is NOT recommended)
+      # s3_resource_arns:  ["arn:aws:s3:::my-bucket"]
+      # ssm_resource_arns: ["arn:aws:ssm:ap-south-1:*:parameter/myapp/*"]
+      vpc_enabled:        false
+      environment_variables:
+        LOG_LEVEL: INFO
+      permission_boundary: ""
+      extra_tags:
+        Component: image-processing
+
+  - name:    order-processor
+    type:    lambda
+    enabled: false
+    config:
+      package_type:       container
+      ecr_name:           order-processor
+      arch:               arm64
+      timeout:            60
+      memory:             1024
+      log_retention_days: 14
+      iam_role_create:    true
+      service_access:     [sqs, dynamodb]
+      # Scope IAM to specific resources
+      # sqs_resource_arns:      ["arn:aws:sqs:ap-south-1:*:my-queue"]
+      # dynamodb_resource_arns: ["arn:aws:dynamodb:ap-south-1:*:table/my-table"]
+      vpc_enabled:        false
+      environment_variables:
+        LOG_LEVEL: INFO
+      extra_tags:
+        Component: order-processing
+
+  # ── ECR ────────────────────────────────────────────────────────────────────
+  - name:    order-processor
+    type:    ecr
+    enabled: false
+    config:
+      scan_on_push:               true
+      tag_immutability:           true
+      encryption:                 AES256
+      max_image_count:            10
+      lambda_integration_enabled: false
+      extra_tags:
+        Component: order-processing
+
+  # ── EC2 ────────────────────────────────────────────────────────────────────
+  - name:    api-server
+    type:    ec2
+    enabled: false
+    config:
+      arch:          arm64
+      os:            ubuntu
+      instance_type: t4g.small
+
+      # AMI — "auto" picks latest for os+arch, or specify a specific AMI ID
+      ami:           auto
+      # ami:         ami-0abcdef1234567890   # pin to a specific AMI
+
+      key_pair_create:        true
+      existing_key_pair_name: ""
+
+      sg_create:       true
+      existing_sg_ids: []
+      ingress_rules:
+        - from_port:   22
+          to_port:     22
+          protocol:    tcp
+          cidr_blocks: ["10.0.0.0/8"]
+          description: "SSH from VPN"
+        - from_port:   443
+          to_port:     443
+          protocol:    tcp
+          cidr_blocks: ["0.0.0.0/0"]
+          description: "HTTPS"
+
+      # VPC + Subnet are REQUIRED — do not deploy into default VPC
+      vpc_id:    "vpc-xxxxxxxxx"
+      subnet_id: "subnet-xxxxxxxxx"
+
+      asg_enabled: false
+
+      ebs_encryption:  default
+      ebs_kms_key_arn: ""
+      ebs_volumes:
+        - device_name: /dev/xvda
+          size:        30
+          type:        gp3
+
+      iam_role_create:           true
+      iam_role_name:             ""
+      existing_instance_profile: ""
+      imdsv2_enabled:            true
+
+      # ── EC2 monitoring integrations ──────────────────────────────────────
+      prometheus_monitoring: true
+      argus_monitoring:      false
+
+      extra_tags:
+        Component:   api
+        Application: order-service
+
+  # ── CloudFront ─────────────────────────────────────────────────────────────
+  - name:    cdn
+    type:    cloudfront
+    enabled: false
+    config:
+      origins:
+        - s3_bucket_name: app-assets
+          origin_id:      s3-assets
+          origin_type:    s3
+          origin_path:    ""
+
+      cache_enabled:          true
+      viewer_protocol_policy: redirect-to-https
+      allowed_methods:        ["GET", "HEAD"]
+      cached_methods:         ["GET", "HEAD"]
+
+      # WAF — set waf_enabled: true to protect the distribution
+      waf_enabled: false
+      waf:
+        create:             true      # true = create new WAF ACL, false = use existing waf_web_acl_id
+        waf_web_acl_id:     ""        # ARN of existing WAF ACL (when create: false)
+        rate_limit_enabled: true
+        rate_limit:         2000      # max requests per 5 minutes per IP
+
+      logging_enabled:     false
+      logging_bucket_name: ""
+      price_class:         PriceClass_All
+      extra_tags:
+        Component: cdn

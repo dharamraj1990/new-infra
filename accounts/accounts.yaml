@@ -1,0 +1,139 @@
+# accounts.yaml
+# name_prefix  = the SHORT prefix used in ALL resource names.
+#                Format: <stage>-<region>-<project>-<type>-<name>
+#                e.g. mamstg  → name_prefix: stg   → stg-ap-south-1-mam-s3-assets
+#                     mamprd  → name_prefix: prd   → prd-ap-south-1-mam-s3-assets
+#                     tvplusdev → name_prefix: dev → dev-ap-south-1-tvplus-s3-assets
+#                     mntstg  → name_prefix: stg   → stg-ap-south-1-mnt-s3-assets
+#                     mntprd  → name_prefix: prd   → prd-ap-south-1-mnt-s3-assets
+# environment  = full env name used for tags/state path only (not resource names)
+
+# ── MAM — Staging ─────────────────────────────────────────────────────────────
+mamstg:
+  environment:  stg
+  name_prefix:  stg           # drives ALL resource names
+  project_name: mam
+  account_id:   "533269020590"
+  role_name:    admin-role
+  region:       ap-south-1
+  owner:        mam-team
+  cost_center:  "CC-MAM-01"
+
+# ── MAM — Production ──────────────────────────────────────────────────────────
+mamprd:
+  environment:  prod
+  name_prefix:  prd
+  project_name: mam
+  account_id:   "222222222222"
+  role_name:    admin-role
+  region:       ap-south-1
+  owner:        mam-team
+  cost_center:  "CC-MAM-01"
+
+# ── TVPlus — Dev ──────────────────────────────────────────────────────────────
+tvplusdev:
+  environment:  dev
+  name_prefix:  dev
+  project_name: tvplus
+  account_id:   "333333333333"
+  role_name:    admin-role
+  region:       ap-south-1
+  owner:        tvplus-team
+  cost_center:  "CC-TVP-01"
+
+# ── MNT — Staging ─────────────────────────────────────────────────────────────
+mntstg:
+  environment:  stg
+  name_prefix:  stg
+  project_name: mnt
+  account_id:   "444444444444"
+  role_name:    admin-role
+  region:       ap-south-1
+  owner:        mnt-team
+  cost_center:  "CC-MNT-01"
+
+# ── MNT — Production ──────────────────────────────────────────────────────────
+mntprd:
+  environment:  prod
+  name_prefix:  prd
+  project_name: mnt
+  account_id:   "555555555555"
+  role_name:    admin-role
+  region:       ap-south-1
+  owner:        mnt-team
+  cost_center:  "CC-MNT-01"
+
+# ── op2mise — dev (existing) ──────────────────────────────────────────────────
+op2mise-dev:
+  environment:  dev
+  name_prefix:  dev
+  project_name: op2mise
+  account_id:   "533269020590"
+  role_name:    admin-role
+  region:       ap-south-1
+  owner:        platform-team
+  cost_center:  "CC-1001"
+
+# ── op2mise — stg ─────────────────────────────────────────────────────────────
+op2mise-stg:
+  environment:  stg
+  name_prefix:  stg
+  project_name: op2mise
+  account_id:   "333333333333"
+  role_name:    admin-role
+  region:       ap-south-1
+  owner:        platform-team
+  cost_center:  "CC-1001"
+
+# ── op2mise — prod ────────────────────────────────────────────────────────────
+op2mise-prod:
+  environment:  prod
+  name_prefix:  prd
+  project_name: op2mise
+  account_id:   "444444444444"
+  role_name:    admin-role
+  region:       ap-south-1
+  owner:        platform-team
+  cost_center:  "CC-1001"
+
+# ── Management ────────────────────────────────────────────────────────────────
+management:
+  environment:  mgmt
+  name_prefix:  mgmt
+  project_name: shared
+  account_id:   "111111111111"
+  role_name:    github-oidc-role
+  region:       ap-south-1
+  owner:        platform-team
+  cost_center:  "CC-0001"
+
+# ── Legacy keys (backward compat) ─────────────────────────────────────────────
+dev:
+  environment:  dev
+  name_prefix:  dev
+  project_name: op2mise
+  account_id:   "533269020590"
+  role_name:    admin-role
+  region:       ap-south-1
+  owner:        platform-team
+  cost_center:  "CC-1001"
+
+stg:
+  environment:  stg
+  name_prefix:  stg
+  project_name: op2mise
+  account_id:   "333333333333"
+  role_name:    admin-role
+  region:       ap-south-1
+  owner:        platform-team
+  cost_center:  "CC-1001"
+
+prod:
+  environment:  prod
+  name_prefix:  prd
+  project_name: op2mise
+  account_id:   "444444444444"
+  role_name:    admin-role
+  region:       ap-south-1
+  owner:        platform-team
+  cost_center:  "CC-1001"

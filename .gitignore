@@ -1,0 +1,13 @@
+.terragrunt-cache/
+.terraform/
+*.tfplan
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+generated_modules.txt
+cost_report.json
+cost_summary.md
+plan_outputs/
+*.log
+__pycache__/
+*.pyc

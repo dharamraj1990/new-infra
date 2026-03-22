@@ -1,0 +1,471 @@
+# .github/workflows/deploy.yml
+#
+# HOW TO RUN:
+#   Actions → Deploy → Run workflow → pick account from dropdown → pick action
+#
+#   mamstg   → stg-approval gate  → stg-ap-south-1-mam-* resource names
+#   mamprd   → prod-approval gate → prd-ap-south-1-mam-* resource names
+#   tvplusdev→ dev-approval gate  → dev-ap-south-1-tvplus-* resource names
+#   mntstg   → stg-approval gate  → stg-ap-south-1-mnt-* resource names
+#   mntprd   → prod-approval gate → prd-ap-south-1-mnt-* resource names
+#
+# All deployments are explicit workflow_dispatch only.
+# The account key flows from the dropdown → TF_ACCOUNT_KEY env var → terragrunt + generate_configs.py.
+# input.yaml contains only: metadata (tags) and resources.
+
+name: "Deploy"
+
+on:
+  workflow_dispatch:
+    inputs:
+      account:
+        description: "Account key (see accounts/accounts.yaml)"
+        required: true
+        type: choice
+        options:
+          - mamstg
+          - mamprd
+          - tvplusdev
+          - mntstg
+          - mntprd
+          - op2mise-dev
+          - op2mise-stg
+          - op2mise-prod
+      action:
+        description: "Action"
+        required: true
+        type: choice
+        options: [apply, destroy, plan]
+        default: plan
+
+permissions:
+  id-token: write
+  contents: read
+  actions:  read
+
+concurrency:
+  group: "deploy-${{ github.event.inputs.account }}"
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: "1.10.3"
+  TG_VERSION: "0.68.9"
+
+jobs:
+  # ── Resolve account metadata ───────────────────────────────────────────────
+  # Reads accounts.yaml to derive environment, region, project from the account
+  # key. All subsequent jobs consume these outputs — nothing is hardcoded.
+  resolve:
+    name: "Resolve Account"
+    runs-on: ubuntu-latest
+    outputs:
+      account:     ${{ steps.info.outputs.account }}
+      environment: ${{ steps.info.outputs.environment }}
+      region:      ${{ steps.info.outputs.region }}
+      project:     ${{ steps.info.outputs.project }}
+      gate:        ${{ steps.info.outputs.gate }}
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with: { python-version: "3.12" }
+      - run: pip install -q pyyaml
+
+      - name: Resolve account info
+        id: info
+        run: |
+          ACCOUNT="${{ github.event.inputs.account }}"
+          ENV=$(python3 scripts/get_account_info.py "$ACCOUNT" environment)
+          REGION=$(python3 scripts/get_account_info.py "$ACCOUNT" region)
+          PROJECT=$(python3 scripts/get_account_info.py "$ACCOUNT" project_name)
+
+          case "$ENV" in
+            prod|prd) GATE="prod-approval" ;;
+            stg)      GATE="stg-approval"  ;;
+            *)        GATE="dev-approval"  ;;
+          esac
+
+          echo "account=$ACCOUNT"     >> $GITHUB_OUTPUT
+          echo "environment=$ENV"     >> $GITHUB_OUTPUT
+          echo "region=$REGION"       >> $GITHUB_OUTPUT
+          echo "project=$PROJECT"     >> $GITHUB_OUTPUT
+          echo "gate=$GATE"           >> $GITHUB_OUTPUT
+
+          echo "### Account resolved"                      >> $GITHUB_STEP_SUMMARY
+          echo "| Key | Value |"                           >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|"                                  >> $GITHUB_STEP_SUMMARY
+          echo "| Account | \`$ACCOUNT\` |"               >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | \`$ENV\` |"               >> $GITHUB_STEP_SUMMARY
+          echo "| Region | \`$REGION\` |"                 >> $GITHUB_STEP_SUMMARY
+          echo "| Project | \`$PROJECT\` |"               >> $GITHUB_STEP_SUMMARY
+          echo "| Approval gate | \`$GATE\` |"            >> $GITHUB_STEP_SUMMARY
+          echo "| Action | \`${{ github.event.inputs.action }}\` |" >> $GITHUB_STEP_SUMMARY
+
+  # ── Plan + Cost ────────────────────────────────────────────────────────────
+  plan:
+    name: "Plan & Cost (${{ needs.resolve.outputs.account }})"
+    needs: resolve
+    runs-on: ubuntu-latest
+    outputs:
+      total_cost:   ${{ steps.cost.outputs.total_monthly_cost }}
+      module_count: ${{ steps.cost.outputs.module_count }}
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd  # v3.1.2
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Setup Terragrunt
+        run: |
+          curl -sLo /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${{ env.TG_VERSION }}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with: { python-version: "3.12" }
+      - run: pip install pyyaml
+
+      - name: Setup Infracost
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/infracost/infracost/master/scripts/install.sh \
+            | sh -s -- -b /usr/local/bin v0.10.38
+
+      - name: Auth — management account (OIDC)
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502  # v4.0.2
+        with:
+          role-to-assume:        arn:aws:iam::${{ secrets.MGMT_ACCOUNT_ID }}:role/${{ secrets.MGMT_ROLE_NAME }}
+          role-session-name:     gh-plan-${{ needs.resolve.outputs.account }}-${{ github.run_id }}
+          aws-region:            ${{ needs.resolve.outputs.region }}
+          role-duration-seconds: 3600
+
+      - name: Auth — assume target account role
+        run: |
+          ACCOUNT="${{ needs.resolve.outputs.account }}"
+          ACCOUNT_ID=$(python3 scripts/get_account_info.py "$ACCOUNT" account_id)
+          ROLE_NAME=$(python3 scripts/get_account_info.py  "$ACCOUNT" role_name)
+          CREDS=$(aws sts assume-role \
+            --role-arn "arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}" \
+            --role-session-name "tg-plan-${ACCOUNT}-${{ github.run_id }}" \
+            --query Credentials --output json)
+
+          AK=$(echo "$CREDS" | jq -r .AccessKeyId)
+          SK=$(echo "$CREDS" | jq -r .SecretAccessKey)
+          ST=$(echo "$CREDS" | jq -r .SessionToken)
+          echo "::add-mask::${SK}"
+          echo "::add-mask::${ST}"
+          echo "AWS_ACCESS_KEY_ID=${AK}"         >> $GITHUB_ENV
+          echo "AWS_SECRET_ACCESS_KEY=${SK}"      >> $GITHUB_ENV
+          echo "AWS_SESSION_TOKEN=${ST}"           >> $GITHUB_ENV
+          echo "MGMT_ACCOUNT_ID=${{ secrets.MGMT_ACCOUNT_ID }}" >> $GITHUB_ENV
+          echo "TF_ACCOUNT_KEY=${ACCOUNT}"         >> $GITHUB_ENV
+
+      - name: Generate configs
+        run: python3 scripts/generate_configs.py input.yaml . --account "${{ needs.resolve.outputs.account }}"
+
+      - name: Terragrunt validate
+        run: |
+          FAILED=0
+          while IFS= read -r p; do
+            [ -z "$p" ] && continue
+            dir=$(dirname "$p")
+            echo "Validating $(basename $dir)..."
+            terragrunt validate --terragrunt-working-dir "$dir" \
+              --terragrunt-non-interactive 2>&1 || FAILED=1
+          done < generated_modules.txt
+          exit $FAILED
+
+      - name: Terragrunt plan
+        run: |
+          mkdir -p plan_outputs
+          REPO_ROOT="$(pwd)"
+          FAILED=0
+          while IFS= read -r p; do
+            [ -z "$p" ] && continue
+            dir=$(dirname "$p")
+            name=$(basename "$dir")
+            echo "::group::Planning $name"
+
+            terragrunt plan \
+              --terragrunt-working-dir "$dir" \
+              --terragrunt-non-interactive \
+              -out="${REPO_ROOT}/plan_outputs/${name}.tfplan" \
+              -no-color 2>&1 | tee "${REPO_ROOT}/plan_outputs/${name}.log"
+            PLAN_EXIT=${PIPESTATUS[0]}
+            if [ $PLAN_EXIT -ne 0 ]; then
+              echo "::error::Plan failed for $name"
+              FAILED=1
+            fi
+
+            CACHE_DIR=$(find "$dir/.terragrunt-cache" -maxdepth 6 -name ".terraform" \
+              -type d 2>/dev/null | head -1 | xargs -I{} dirname {} 2>/dev/null || true)
+
+            if [ -n "$CACHE_DIR" ] && [ -f "${REPO_ROOT}/plan_outputs/${name}.tfplan" ]; then
+              terraform -chdir="$CACHE_DIR" show -json \
+                "${REPO_ROOT}/plan_outputs/${name}.tfplan" \
+                > "${REPO_ROOT}/plan_outputs/${name}.json" \
+                2>"${REPO_ROOT}/plan_outputs/${name}.show.err" || true
+
+              if python3 -c "import json,sys; d=json.load(open('${REPO_ROOT}/plan_outputs/${name}.json')); sys.exit(0 if d.get('format_version') else 1)" 2>/dev/null; then
+                echo "  JSON plan: $(wc -c < "${REPO_ROOT}/plan_outputs/${name}.json") bytes"
+              else
+                rm -f "${REPO_ROOT}/plan_outputs/${name}.json"
+                echo "  [warn] terraform show invalid for $name"
+                cat "${REPO_ROOT}/plan_outputs/${name}.show.err" || true
+              fi
+            else
+              echo "  [warn] No .terraform cache found for $name"
+            fi
+            echo "::endgroup::"
+          done < generated_modules.txt
+          exit $FAILED
+
+      - name: Cost estimation
+        id: cost
+        env:
+          INFRACOST_API_KEY: ${{ secrets.INFRACOST_API_KEY }}
+          PLAN_DIR: plan_outputs
+          ENVIRONMENT: ${{ needs.resolve.outputs.environment }}
+          PROJECT:     ${{ needs.resolve.outputs.project }}
+        run: python3 scripts/cost_estimate.py
+
+      - name: Post plan summary
+        run: cat cost_summary.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload plan artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: plan-${{ needs.resolve.outputs.account }}-${{ github.run_id }}
+          path: |
+            cost_report.json
+            cost_summary.md
+            generated_modules.txt
+            plan_outputs/
+          retention-days: 7
+
+  # ── Approval gate ──────────────────────────────────────────────────────────
+  # Gate name is derived from account → environment → approval environment:
+  #   mamstg  → stg  → stg-approval
+  #   mamprd  → prod → prod-approval
+  #   tvplusdev → dev → dev-approval
+  #
+  # Setup: repo Settings → Environments → {gate} → Add required reviewers
+  # GitHub emails every reviewer when this job is pending.
+  approval:
+    name: "Approval (${{ needs.resolve.outputs.gate }})"
+    needs: [resolve, plan]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve.outputs.gate }}
+    steps:
+      - run: |
+          echo "Approved"
+          echo "   Account : ${{ needs.resolve.outputs.account }}"
+          echo "   Env     : ${{ needs.resolve.outputs.environment }}"
+          echo "   Action  : ${{ github.event.inputs.action }}"
+          echo "   Cost    : ${{ needs.plan.outputs.total_cost }}/month"
+
+  # ── Apply ──────────────────────────────────────────────────────────────────
+  apply:
+    name: "Apply (${{ needs.resolve.outputs.account }})"
+    needs: [resolve, plan, approval]
+    if: github.event.inputs.action == 'apply'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd  # v3.1.2
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Setup Terragrunt
+        run: |
+          curl -sLo /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${{ env.TG_VERSION }}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with: { python-version: "3.12" }
+      - run: pip install pyyaml
+
+      - name: Auth — management account
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502  # v4.0.2
+        with:
+          role-to-assume:        arn:aws:iam::${{ secrets.MGMT_ACCOUNT_ID }}:role/${{ secrets.MGMT_ROLE_NAME }}
+          role-session-name:     gh-apply-${{ needs.resolve.outputs.account }}-${{ github.run_id }}
+          aws-region:            ${{ needs.resolve.outputs.region }}
+          role-duration-seconds: 3600
+
+      - name: Auth — assume target account role
+        run: |
+          ACCOUNT="${{ needs.resolve.outputs.account }}"
+          ACCOUNT_ID=$(python3 scripts/get_account_info.py "$ACCOUNT" account_id)
+          ROLE_NAME=$(python3 scripts/get_account_info.py  "$ACCOUNT" role_name)
+          CREDS=$(aws sts assume-role \
+            --role-arn "arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}" \
+            --role-session-name "tg-apply-${ACCOUNT}-${{ github.run_id }}" \
+            --query Credentials --output json)
+
+          AK=$(echo "$CREDS" | jq -r .AccessKeyId)
+          SK=$(echo "$CREDS" | jq -r .SecretAccessKey)
+          ST=$(echo "$CREDS" | jq -r .SessionToken)
+          echo "::add-mask::${SK}"
+          echo "::add-mask::${ST}"
+          echo "AWS_ACCESS_KEY_ID=${AK}"         >> $GITHUB_ENV
+          echo "AWS_SECRET_ACCESS_KEY=${SK}"      >> $GITHUB_ENV
+          echo "AWS_SESSION_TOKEN=${ST}"           >> $GITHUB_ENV
+          echo "MGMT_ACCOUNT_ID=${{ secrets.MGMT_ACCOUNT_ID }}" >> $GITHUB_ENV
+          echo "TF_ACCOUNT_KEY=${ACCOUNT}"         >> $GITHUB_ENV
+
+      - name: Download plan artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: plan-${{ needs.resolve.outputs.account }}-${{ github.run_id }}
+
+      - name: Generate configs
+        run: python3 scripts/generate_configs.py input.yaml . --account "${{ needs.resolve.outputs.account }}"
+
+      - name: Terragrunt apply (from saved plan)
+        run: |
+          set -e
+          REPO_ROOT="$(pwd)"
+          while IFS= read -r p; do
+            [ -z "$p" ] && continue
+            dir=$(dirname "$p")
+            name=$(basename "$dir")
+            PLAN_FILE="${REPO_ROOT}/plan_outputs/${name}.tfplan"
+            echo "::group::Applying $name"
+
+            if [ -f "$PLAN_FILE" ]; then
+              # Apply from saved plan file — ensures what was reviewed is what gets applied
+              terragrunt apply \
+                --terragrunt-working-dir "$dir" \
+                --terragrunt-non-interactive \
+                "$PLAN_FILE" \
+                -no-color 2>&1 | tee "apply_${name}.log"
+            else
+              echo "::warning::No plan file for $name — running apply with auto-approve"
+              terragrunt apply \
+                --terragrunt-working-dir "$dir" \
+                --terragrunt-non-interactive \
+                -auto-approve -no-color 2>&1 | tee "apply_${name}.log"
+            fi
+
+            EXIT_CODE=${PIPESTATUS[0]}
+            echo "::endgroup::"
+            if [ $EXIT_CODE -ne 0 ]; then
+              echo "::error::Apply failed for $name"
+              exit $EXIT_CODE
+            fi
+            echo "Done: $name applied"
+          done < generated_modules.txt
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Apply ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "| Account | \`${{ needs.resolve.outputs.account }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | \`${{ needs.resolve.outputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Actor | \`${{ github.actor }}\` |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: apply-logs-${{ github.run_id }}
+          path: "apply_*.log"
+          retention-days: 14
+
+  # ── Destroy ────────────────────────────────────────────────────────────────
+  destroy:
+    name: "Destroy (${{ needs.resolve.outputs.account }})"
+    needs: [resolve, plan, approval]
+    if: github.event.inputs.action == 'destroy'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd  # v3.1.2
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Setup Terragrunt
+        run: |
+          curl -sLo /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${{ env.TG_VERSION }}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with: { python-version: "3.12" }
+      - run: pip install pyyaml
+
+      - name: Auth — management account
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502  # v4.0.2
+        with:
+          role-to-assume:        arn:aws:iam::${{ secrets.MGMT_ACCOUNT_ID }}:role/${{ secrets.MGMT_ROLE_NAME }}
+          role-session-name:     gh-destroy-${{ needs.resolve.outputs.account }}-${{ github.run_id }}
+          aws-region:            ${{ needs.resolve.outputs.region }}
+          role-duration-seconds: 3600
+
+      - name: Auth — assume target account role
+        run: |
+          ACCOUNT="${{ needs.resolve.outputs.account }}"
+          ACCOUNT_ID=$(python3 scripts/get_account_info.py "$ACCOUNT" account_id)
+          ROLE_NAME=$(python3 scripts/get_account_info.py  "$ACCOUNT" role_name)
+          CREDS=$(aws sts assume-role \
+            --role-arn "arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}" \
+            --role-session-name "tg-destroy-${ACCOUNT}-${{ github.run_id }}" \
+            --query Credentials --output json)
+
+          AK=$(echo "$CREDS" | jq -r .AccessKeyId)
+          SK=$(echo "$CREDS" | jq -r .SecretAccessKey)
+          ST=$(echo "$CREDS" | jq -r .SessionToken)
+          echo "::add-mask::${SK}"
+          echo "::add-mask::${ST}"
+          echo "AWS_ACCESS_KEY_ID=${AK}"         >> $GITHUB_ENV
+          echo "AWS_SECRET_ACCESS_KEY=${SK}"      >> $GITHUB_ENV
+          echo "AWS_SESSION_TOKEN=${ST}"           >> $GITHUB_ENV
+          echo "MGMT_ACCOUNT_ID=${{ secrets.MGMT_ACCOUNT_ID }}" >> $GITHUB_ENV
+          echo "TF_ACCOUNT_KEY=${ACCOUNT}"         >> $GITHUB_ENV
+
+      - name: Generate configs
+        run: python3 scripts/generate_configs.py input.yaml . --account "${{ needs.resolve.outputs.account }}"
+
+      - name: Terragrunt destroy (reverse order)
+        run: |
+          set -e
+          mapfile -t MODULES < generated_modules.txt
+          for (( i=${#MODULES[@]}-1; i>=0; i-- )); do
+            p="${MODULES[$i]}"
+            [ -z "$p" ] && continue
+            dir=$(dirname "$p")
+            name=$(basename "$dir")
+            echo "::group::Destroying $name"
+            terragrunt destroy \
+              --terragrunt-working-dir "$dir" \
+              --terragrunt-non-interactive \
+              -auto-approve -no-color 2>&1 | tee "destroy_${name}.log"
+            EXIT_CODE=${PIPESTATUS[0]}
+            echo "::endgroup::"
+            if [ $EXIT_CODE -ne 0 ]; then
+              echo "::error::Destroy failed for $name"
+              exit $EXIT_CODE
+            fi
+            echo "Done: $name destroyed"
+          done
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: destroy-logs-${{ github.run_id }}
+          path: "destroy_*.log"
+          retention-days: 30
