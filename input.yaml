@@ -103,6 +103,8 @@ resources:
       package_type:       zip
       runtime:            python3.12
       handler:            handler.main
+      # filename:         "path/to/deployment.zip"  # custom zip package (default: placeholder.zip)
+      # source_code_hash: ""                        # base64-encoded SHA256 of the zip for change detection
       arch:               arm64
       timeout:            30
       memory:             512
@@ -130,7 +132,12 @@ resources:
     enabled: false
     config:
       package_type:       container
-      ecr_name:           order-processor
+      ecr_name:           order-processor       # ECR repo in this stack (when enabled)
+      # image_uri:        "123456789012.dkr.ecr.ap-south-1.amazonaws.com/my-repo:v1"  # use existing/external image (overrides ecr_name)
+      # image_tag:        "latest"              # tag to append when using ecr_name dependency (default: latest)
+      # image_command:    ["handler.main"]       # override container CMD
+      # image_entry_point: ["/lambda-entrypoint.sh"]  # override container ENTRYPOINT
+      # image_working_directory: "/var/task"     # override container WORKDIR
       arch:               arm64
       timeout:            60
       memory:             1024

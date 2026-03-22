@@ -117,8 +117,8 @@ def gen_s3(r, ctx):
   lambda_function_arn       = dependency.{dep_var}.outputs.function_arn
   lambda_execution_role_arn = dependency.{dep_var}.outputs.execution_role_arn
   lambda_trigger_events     = {events_json}
-  lambda_filter_prefix      = "{lt.get("filter_prefix","")}"
-  lambda_filter_suffix      = "{lt.get("filter_suffix","")}" """
+  lambda_filter_prefix      = "{hcl_escape(lt.get("filter_prefix",""))}"
+  lambda_filter_suffix      = "{hcl_escape(lt.get("filter_suffix",""))}" """
     else:
         lambda_inputs = "  lambda_trigger_enabled = false"
 
@@ -134,14 +134,16 @@ terraform {{
 
 inputs = {{
   name                   = "{r["name"]}"
-  bucket_type            = "{cfg.get("bucket_type","standard")}"
+  bucket_type            = "{hcl_escape(cfg.get("bucket_type","standard"))}"
   versioning             = {str(cfg.get("versioning",True)).lower()}
+  force_destroy          = {str(cfg.get("force_destroy",False)).lower()}
   lifecycle_enabled      = {str(cfg.get("lifecycle_enabled",True)).lower()}
   intelligent_tiering    = {str(cfg.get("intelligent_tiering",True)).lower()}
   expiry_days            = {cfg.get("expiry_days",0)}
-  encryption             = "{cfg.get("encryption","AES256")}"
-  kms_key_arn            = "{cfg.get("kms_key_arn","")}"
-  access_log_bucket_name = "{cfg.get("access_log_bucket_name","")}"
+  encryption             = "{hcl_escape(cfg.get("encryption","AES256"))}"
+  kms_key_arn            = "{hcl_escape(cfg.get("kms_key_arn",""))}"
+  access_log_bucket_name = "{hcl_escape(cfg.get("access_log_bucket_name",""))}"
+  allowed_vpc_ids        = {json.dumps(cfg.get("allowed_vpc_ids",[]))}
 {lambda_inputs}
 {extra_tags_hcl(cfg)}
 }}
@@ -160,10 +162,12 @@ def gen_sns(r, ctx):
         items = []
         for s in subs:
             items.append(f"""    {{
-      protocol = "{s["protocol"]}"
-      endpoint = "{s.get("endpoint","")}"
+      protocol = "{hcl_escape(s["protocol"])}"
+      endpoint = "{hcl_escape(s.get("endpoint",""))}"
     }},""")
         subs_hcl = "  subscriptions = [\n" + "\n".join(items) + "\n  ]"
+
+    allowed_role_arns = cfg.get("allowed_role_arns", [])
 
     return f"""include "root" {{
   path = find_in_parent_folders()
@@ -174,10 +178,12 @@ terraform {{
 }}
 
 inputs = {{
-  name         = "{r["name"]}"
-  fifo         = {str(cfg.get("fifo",False)).lower()}
-  display_name = "{cfg.get("display_name","")}"
-  kms_key_arn  = "{cfg.get("kms_key_arn","alias/aws/sns")}"
+  name                        = "{r["name"]}"
+  fifo                        = {str(cfg.get("fifo",False)).lower()}
+  content_based_deduplication = {str(cfg.get("content_based_deduplication",False)).lower()}
+  display_name                = "{hcl_escape(cfg.get("display_name",""))}"
+  kms_key_arn                 = "{hcl_escape(cfg.get("kms_key_arn","alias/aws/sns"))}"
+  allowed_role_arns           = {json.dumps(allowed_role_arns)}
 {subs_hcl}
 {extra_tags_hcl(cfg)}
 }}
@@ -211,7 +217,9 @@ inputs = {{
   dlq_enabled                 = {str(cfg.get("dlq_enabled",False)).lower()}
   dlq_max_receive_count       = {cfg.get("dlq_max_receive_count",3)}
   dlq_message_retention       = {cfg.get("dlq_message_retention",1209600)}
-  kms_key_arn                 = "{cfg.get("kms_key_arn","")}"
+  kms_key_arn                 = "{hcl_escape(cfg.get("kms_key_arn",""))}"
+  kms_data_key_reuse_period   = {cfg.get("kms_data_key_reuse_period",300)}
+  allowed_sns_topic_arns      = {json.dumps(cfg.get("allowed_sns_topic_arns",[]))}
 {extra_tags_hcl(cfg)}
 }}
 """
@@ -234,9 +242,12 @@ inputs = {{
   name                       = "{r["name"]}"
   scan_on_push               = {str(cfg.get("scan_on_push",True)).lower()}
   tag_immutability           = {str(cfg.get("tag_immutability",True)).lower()}
-  encryption                 = "{cfg.get("encryption","AES256")}"
+  force_delete               = {str(cfg.get("force_delete",False)).lower()}
+  encryption                 = "{hcl_escape(cfg.get("encryption","AES256"))}"
+  kms_key_arn                = "{hcl_escape(cfg.get("kms_key_arn",""))}"
   max_image_count            = {cfg.get("max_image_count",10)}
   lambda_integration_enabled = {str(cfg.get("lambda_integration_enabled",False)).lower()}
+  allowed_principal_arns     = {json.dumps(cfg.get("allowed_principal_arns",[]))}
 {extra_tags_hcl(cfg)}
 }}
 """
@@ -254,19 +265,48 @@ def gen_lambda(r, ctx):
     dep_blocks   = []
     extra_inputs = []
 
-    # Container → ECR dependency (only if ECR is enabled)
+    # Container image_uri resolution:
+    #   1. User provides explicit image_uri in config → use it directly (external ECR or any registry)
+    #   2. ECR resource is enabled in this stack → wire dependency to get repo URL
+    #   3. Neither → error (container Lambda requires an image)
     if pkg == "container":
-        if is_enabled(ctx["all_resources"], "ecr", ecr_name):
+        explicit_image_uri = cfg.get("image_uri", "")
+        image_tag = cfg.get("image_tag", "latest")
+        if explicit_image_uri:
+            # User provided image_uri directly (external ECR, Docker Hub, etc.)
+            extra_inputs.append(f'  image_uri = "{hcl_escape(explicit_image_uri)}"')
+        elif is_enabled(ctx["all_resources"], "ecr", ecr_name):
             dep_var  = f"ecr_{ecr_name.replace('-','_')}"
             dep_path = f"../ecr-{ecr_name}"
             dep_blocks.append(mock_dep(dep_var, dep_path, {
                 "repository_url": f"000000000000.dkr.ecr.{region}.amazonaws.com/placeholder",
             }))
             extra_inputs.append(
-                f'  image_uri = "${{dependency.{dep_var}.outputs.repository_url}}:latest"'
+                f'  image_uri = "${{dependency.{dep_var}.outputs.repository_url}}:{hcl_escape(image_tag)}"'
             )
         else:
-            extra_inputs.append(f'  # image_uri: ECR "{ecr_name}" is disabled — provide image_uri directly')
+            print(f"[WARN] Lambda '{r['name']}' is container type but ECR '{ecr_name}' is disabled and no image_uri provided")
+            extra_inputs.append(f'  # WARNING: container Lambda requires image_uri — set config.image_uri or enable ECR "{ecr_name}"')
+
+        # Container image config overrides
+        image_cmd = cfg.get("image_command", [])
+        image_ep  = cfg.get("image_entry_point", [])
+        image_wd  = cfg.get("image_working_directory", "")
+        if image_cmd:
+            extra_inputs.append(f"  image_command         = {json.dumps(image_cmd)}")
+        if image_ep:
+            extra_inputs.append(f"  image_entry_point     = {json.dumps(image_ep)}")
+        if image_wd:
+            extra_inputs.append(f'  image_working_directory = "{hcl_escape(image_wd)}"')
+
+    # Zip package — wire filename/source_code_hash if provided
+    if pkg == "zip":
+        filename = cfg.get("filename", "")
+        if filename:
+            extra_inputs.append(f'  filename = "{hcl_escape(filename)}"')
+        source_hash = cfg.get("source_code_hash", "")
+        if source_hash:
+            extra_inputs.append(f'  source_code_hash = "{hcl_escape(source_hash)}"')
 
     # SQS trigger (only if SQS is enabled)
     sqs_cfg = ctx.get("sqs_triggers", {}).get(r["name"])
@@ -308,7 +348,7 @@ def gen_lambda(r, ctx):
     vpc_inputs = ""
     if cfg.get("vpc_enabled", False):
         vpc_inputs = f"""\
-  vpc_id          = "{cfg.get("vpc_id","")}"
+  vpc_id          = "{hcl_escape(cfg.get("vpc_id",""))}"
   subnet_ids      = {json.dumps(cfg.get("subnet_ids",[]))}
   sg_create       = {str(cfg.get("sg_create",True)).lower()}
   existing_sg_ids = {json.dumps(cfg.get("existing_sg_ids",[]))}"""
@@ -344,10 +384,11 @@ inputs = {{
   memory_size         = {cfg.get("memory",512)}
   log_retention_days  = {cfg.get("log_retention_days",14)}
   iam_role_create     = {str(cfg.get("iam_role_create",True)).lower()}
-  iam_role_arn        = "{cfg.get("iam_role_arn","")}"
+  iam_role_arn        = "{hcl_escape(cfg.get("iam_role_arn",""))}"
+  iam_role_name       = "{hcl_escape(cfg.get("iam_role_name",""))}"
   vpc_enabled         = {str(cfg.get("vpc_enabled",False)).lower()}
   service_access      = {svc}
-  permission_boundary = "{cfg.get("permission_boundary","")}"
+  permission_boundary = "{hcl_escape(cfg.get("permission_boundary",""))}"
 {env_hcl}
 {vpc_inputs}
 {chr(10).join(extra_inputs)}
@@ -365,7 +406,7 @@ def gen_ec2(r, ctx):
 
     key_hcl = f"""\
   key_pair_create        = {str(cfg.get("key_pair_create",True)).lower()}
-  existing_key_pair_name = "{cfg.get("existing_key_pair_name","")}" """
+  existing_key_pair_name = "{hcl_escape(cfg.get("existing_key_pair_name",""))}" """
 
     sg_create       = cfg.get("sg_create", True)
     existing_sg_ids = cfg.get("existing_sg_ids", [])
@@ -383,7 +424,7 @@ def gen_ec2(r, ctx):
       to_port     = {rule["to_port"]}
       protocol    = "{rule["protocol"]}"
       cidr_blocks = {json.dumps(rule.get("cidr_blocks",[]))}
-      description = "{rule.get("description","")}"
+      description = "{hcl_escape(rule.get("description",""))}"
     }},""")
         ingress_hcl = "  ingress_rules = [\n" + "\n".join(items) + "\n  ]"
 
@@ -399,8 +440,8 @@ def gen_ec2(r, ctx):
 
     iam_hcl = f"""\
   iam_role_create           = {str(cfg.get("iam_role_create",True)).lower()}
-  iam_role_name             = "{cfg.get("iam_role_name","")}"
-  existing_instance_profile = "{cfg.get("existing_instance_profile","")}" """
+  iam_role_name             = "{hcl_escape(cfg.get("iam_role_name",""))}"
+  existing_instance_profile = "{hcl_escape(cfg.get("existing_instance_profile",""))}" """
 
     asg_hcl = f"  asg_enabled = {str(cfg.get('asg_enabled',False)).lower()}"
     if cfg.get("asg_enabled", False):
@@ -409,6 +450,13 @@ def gen_ec2(r, ctx):
   asg_min        = {cfg.get("asg_min",1)}
   asg_max        = {cfg.get("asg_max",3)}
   asg_subnet_ids = {json.dumps(cfg.get("asg_subnet_ids",[]))}"""
+
+    # user_data: multiline scripts need heredoc syntax, not quoted strings
+    user_data_raw = cfg.get("user_data", "")
+    if user_data_raw:
+        user_data_hcl = f"  user_data             = <<-EOT\n{user_data_raw}\n  EOT"
+    else:
+        user_data_hcl = '  user_data             = ""'
 
     return f"""include "root" {{
   path = find_in_parent_folders()
@@ -424,11 +472,11 @@ inputs = {{
   os             = "{cfg.get("os","ubuntu")}"
   instance_type  = "{cfg.get("instance_type","t4g.small")}"
   ami            = "{cfg.get("ami","auto")}"
-  vpc_id         = "{cfg.get("vpc_id","vpc-xxxxxxxxx")}"
-  subnet_id      = "{cfg.get("subnet_id","subnet-xxxxxxxxx")}"
+  vpc_id         = "{hcl_escape(cfg.get("vpc_id","vpc-xxxxxxxxx"))}"
+  subnet_id      = "{hcl_escape(cfg.get("subnet_id","subnet-xxxxxxxxx"))}"
   imdsv2_enabled = {str(cfg.get("imdsv2_enabled",True)).lower()}
-  ebs_encryption = "{cfg.get("ebs_encryption","default")}"
-  ebs_kms_key_arn= "{cfg.get("ebs_kms_key_arn","")}"
+  ebs_encryption = "{hcl_escape(cfg.get("ebs_encryption","default"))}"
+  ebs_kms_key_arn= "{hcl_escape(cfg.get("ebs_kms_key_arn",""))}"
 {key_hcl}
 {sg_hcl}
 {ingress_hcl}
@@ -437,7 +485,7 @@ inputs = {{
 {ebs_hcl}
   prometheus_monitoring = {str(cfg.get("prometheus_monitoring", False)).lower()}
   argus_monitoring      = {str(cfg.get("argus_monitoring", False)).lower()}
-  user_data             = "{cfg.get("user_data","")}"
+{user_data_hcl}
 {extra_tags_hcl(cfg)}
 }}
 """
@@ -526,25 +574,31 @@ terraform {{
 
 inputs = {{
   cf_name                = "{r["name"]}"
-  price_class            = "{cfg.get("price_class","PriceClass_All")}"
+  price_class            = "{hcl_escape(cfg.get("price_class","PriceClass_All"))}"
   waf_enabled            = {waf_enabled}
   waf_create             = {waf_create}
-  waf_web_acl_id         = "{waf_acl_id}"
+  waf_web_acl_id         = "{hcl_escape(waf_acl_id)}"
   waf_rate_limit_enabled = {waf_rate_limit_enabled}
   waf_rate_limit         = {waf_rate_limit}
   cache_enabled          = {str(cfg.get("cache_enabled",True)).lower()}
-  viewer_protocol_policy = "{cfg.get("viewer_protocol_policy","redirect-to-https")}"
+  min_ttl                = {cfg.get("min_ttl",0)}
+  default_ttl            = {cfg.get("default_ttl",86400)}
+  max_ttl                = {cfg.get("max_ttl",31536000)}
+  viewer_protocol_policy = "{hcl_escape(cfg.get("viewer_protocol_policy","redirect-to-https"))}"
   allowed_methods        = {json.dumps(cfg.get("allowed_methods",["GET","HEAD"]))}
   cached_methods         = {json.dumps(cfg.get("cached_methods",["GET","HEAD"]))}
   forward_query_strings  = {str(cfg.get("forward_query_strings",False)).lower()}
-  forward_cookies        = "{cfg.get("forward_cookies","none")}"
+  forward_headers        = {json.dumps(cfg.get("forward_headers",[]))}
+  forward_cookies        = "{hcl_escape(cfg.get("forward_cookies","none"))}"
+  whitelisted_cookie_names = {json.dumps(cfg.get("whitelisted_cookie_names",[]))}
   logging_enabled        = {str(cfg.get("logging_enabled",False)).lower()}
-  logging_bucket_name    = "{cfg.get("logging_bucket_name","")}"
-  geo_restriction_type      = "{geo_type}"
+  logging_bucket_name    = "{hcl_escape(cfg.get("logging_bucket_name",""))}"
+  logging_include_cookies = {str(cfg.get("logging_include_cookies",False)).lower()}
+  geo_restriction_type      = "{hcl_escape(geo_type)}"
   geo_restriction_locations = {geo_locations}
-  acm_certificate_arn    = "{cfg.get("acm_certificate_arn","")}"
+  acm_certificate_arn    = "{hcl_escape(cfg.get("acm_certificate_arn",""))}"
   aliases                = {json.dumps(cfg.get("aliases",[]))}
-  default_root_object    = "{cfg.get("default_root_object","index.html")}"
+  default_root_object    = "{hcl_escape(cfg.get("default_root_object","index.html"))}"
 {origins_hcl}
 {behaviors_hcl}
 {extra_tags_hcl(cfg)}
