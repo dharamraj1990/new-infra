@@ -82,4 +82,4 @@ Example: `stg-ap-south-1-mam-lambda-image-processor`
 - The root `terragrunt.hcl` reads `TF_ACCOUNT_KEY` from env with `get_env()`. For local runs, either export it or add a temporary `account:` key to `input.yaml` (the `try()` fallback reads it).
 - `generate_configs.py` requires `--account` in CI. It falls back to `data["account"]` in `input.yaml` for local use.
 - Terraform modules use `mock_outputs_allowed_terraform_commands = ["validate", "plan", "destroy"]` — mocks are never used during apply.
-- The apply job currently re-plans instead of using saved `.tfplan` files (known issue).
+- The apply job intentionally re-plans instead of using saved `.tfplan` files. Terragrunt re-resolves `dependency` outputs at apply time, which can differ from plan time (mock vs real values), causing Terraform "Can't change variable" errors. Plan files are kept for cost estimation and audit.

@@ -325,31 +325,24 @@ jobs:
       - name: Generate configs
         run: python3 scripts/generate_configs.py input.yaml . --account "${{ needs.resolve.outputs.account }}"
 
-      - name: Terragrunt apply (from saved plan)
+      - name: Terragrunt apply
+        # NOTE: We do NOT apply from saved .tfplan files because Terragrunt
+        # re-resolves dependency outputs at apply time.  With cross-module
+        # dependencies (e.g. S3 → Lambda ARN), the resolved values can differ
+        # from plan time, causing "Can't change variable" errors.  Plan files
+        # are still generated for cost estimation and human review.
         run: |
           set -e
-          REPO_ROOT="$(pwd)"
           while IFS= read -r p; do
             [ -z "$p" ] && continue
             dir=$(dirname "$p")
             name=$(basename "$dir")
-            PLAN_FILE="${REPO_ROOT}/plan_outputs/${name}.tfplan"
             echo "::group::Applying $name"
 
-            if [ -f "$PLAN_FILE" ]; then
-              # Apply from saved plan file — ensures what was reviewed is what gets applied
-              terragrunt apply \
-                --terragrunt-working-dir "$dir" \
-                --terragrunt-non-interactive \
-                "$PLAN_FILE" \
-                -no-color 2>&1 | tee "apply_${name}.log"
-            else
-              echo "::warning::No plan file for $name — running apply with auto-approve"
-              terragrunt apply \
-                --terragrunt-working-dir "$dir" \
-                --terragrunt-non-interactive \
-                -auto-approve -no-color 2>&1 | tee "apply_${name}.log"
-            fi
+            terragrunt apply \
+              --terragrunt-working-dir "$dir" \
+              --terragrunt-non-interactive \
+              -auto-approve -no-color 2>&1 | tee "apply_${name}.log"
 
             EXIT_CODE=${PIPESTATUS[0]}
             echo "::endgroup::"
