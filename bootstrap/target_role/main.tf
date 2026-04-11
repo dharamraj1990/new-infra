@@ -19,7 +19,7 @@ variable "mgmt_account_id" {
 
 variable "role_name" {
   type    = string
-  default = "admin-role"
+  default = "deploy-role"
 }
 
 variable "tf_state_bucket_prefix" {

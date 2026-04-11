@@ -4,9 +4,9 @@
 # resource_target is optional — leave blank to destroy everything.
 #
 # Examples:
-#   account=mamstg,  resource_target=         → destroy ALL in mamstg
-#   account=mamprd,  resource_target=ec2-api-server → destroy only that EC2
-#   account=tvplusdev, resource_target=s3-app-assets → destroy only that S3
+#   account=dev, resource_target=            → destroy ALL in dev
+#   account=stg, resource_target=ec2-api-server → destroy only that EC2
+#   account=prd, resource_target=s3-app-assets  → destroy only that S3
 
 name: "Destroy"
 
@@ -18,14 +18,9 @@ on:
         required: true
         type: choice
         options:
-          - mamstg
-          - mamprd
-          - tvplusdev
-          - mntstg
-          - mntprd
-          - op2mise-dev
-          - op2mise-stg
-          - op2mise-prod
+          - dev
+          - stg
+          - prd
       resource_target:
         description: "Single resource to destroy e.g. ec2-api-server (blank = ALL)"
         required: false

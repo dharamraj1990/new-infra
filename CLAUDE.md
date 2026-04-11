@@ -14,7 +14,7 @@ Multi-account AWS infrastructure framework using **Terragrunt + Terraform** with
 - **No static env/region/project in input.yaml**: These are always derived from `accounts/accounts.yaml` via the account key. Never add them back to `input.yaml`.
 - **Flat live/ layout**: `live/<env>/<type>-<name>/terragrunt.hcl` — no nested region or project folders. The `env` directory name comes from `accounts.yaml[key].environment`.
 - **name_prefix vs environment**: `name_prefix` (e.g. `stg`, `prd`, `dev`) drives all resource names. `environment` (e.g. `stg`, `prod`, `dev`) is used only for tags and state paths. They can differ.
-- **Per-environment overlays**: `envs/<env>.yaml` (dev/stg/prod) is deep-merged on top of `input.yaml` after the account is resolved. Only specify keys that differ — `enabled` and any `config` sub-keys. Base values not mentioned in the overlay are kept unchanged. This is where environment-specific sizing, retention, and feature flags live.
+- **Single file for all environments**: `input.yaml` is the only file users edit. `enabled:` per resource is a dict `{dev: true, stg: false, prod: true}` — the generator reads the resolved env and picks the right value. `env_config:` holds per-env config overrides (memory, instance_type, retention, etc.) merged on top of `config:` at generation time. No separate env files needed.
 - **Smart dependency wiring**: `generate_configs.py` only adds Terragrunt `dependency` blocks when the target resource is also `enabled: true`. Disabled dependencies are silently skipped to prevent "no outputs" errors.
 - **Deployment order**: `generate_configs.py` sorts by `TYPE_ORDER` (ecr → sns → sqs → lambda → s3 → ec2 → cloudfront). Destroy runs in reverse.
 
@@ -79,23 +79,33 @@ All resources: `<name_prefix>-<region>-<project>-<type>-<name>`
 
 Example: `stg-ap-south-1-mam-lambda-image-processor`
 
-## Environment Overlay System
+## Environment Configuration (single file)
 
-The two-file model for every change:
+Everything lives in `input.yaml`. For each resource:
 
-| What changes | Where to edit |
+```yaml
+- name: api-server
+  type: ec2
+  enabled:           # which environments deploy this resource
+    dev:  false
+    stg:  true
+    prod: true
+  config:            # base config — shared across all envs
+    instance_type: t4g.small
+    ...
+  env_config:        # per-env overrides — merged on top of config at generation time
+    prod:
+      instance_type: t4g.xlarge
+      argus_monitoring: on
+```
+
+| What changes | Where in input.yaml |
 |---|---|
-| Resource definition, shape, wiring | `input.yaml` |
-| Whether it's on/off per env | `envs/<env>.yaml` → `enabled: true/false` |
-| Sizing/config per env (memory, instance_type, retention) | `envs/<env>.yaml` → `config:` sub-keys |
-| Tags for all resources globally | `input.yaml` → `tags:` |
-| Tags for one env | `envs/<env>.yaml` → `tags:` |
-
-Overlay merge rules:
-- `tags:` in env file is merged on top of base (`input.yaml`) tags — env wins on conflict
-- `resources:` matched by `type` + `name`. Unknown resources in the overlay are silently skipped
-- `enabled:` in overlay overrides base enabled state
-- `config:` keys in overlay override base config per-key — unchanged keys are kept from base
+| Turn a resource on/off per env | `enabled.dev / enabled.stg / enabled.prod` |
+| Env-specific sizing/flags | `env_config.<env>:` sub-keys |
+| Base config (shared) | `config:` |
+| Tags for all resources | top-level `tags:` |
+| Tags for one resource | `config.tags:` |
 
 ## Adding a New Resource Type
 

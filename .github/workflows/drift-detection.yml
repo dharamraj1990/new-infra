@@ -9,14 +9,9 @@ on:
         description: "Account key to check (see accounts/accounts.yaml)"
         type: choice
         options:
-          - mamstg
-          - mamprd
-          - tvplusdev
-          - mntstg
-          - mntprd
-          - op2mise-dev
-          - op2mise-stg
-          - op2mise-prod
+          - dev
+          - stg
+          - prd
 
 permissions:
   id-token: write
@@ -34,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        account: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', github.event.inputs.account)) || fromJSON('["mamstg","mamprd","tvplusdev","mntstg","mntprd","op2mise-dev","op2mise-stg","op2mise-prod"]') }}
+        account: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', github.event.inputs.account)) || fromJSON('["dev","stg","prd"]') }}
 
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2

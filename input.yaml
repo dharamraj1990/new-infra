@@ -1,7 +1,13 @@
 # =============================================================================
-# input.yaml — SINGLE source of truth.
-# Switch projects by changing "account" key (matches accounts/accounts.yaml).
-# Common tags flow to every resource; per-resource tags: blocks add/override.
+# input.yaml — SINGLE source of truth for ALL environments.
+#
+# Two concepts per resource:
+#   enabled:     dict of env → true/false   (which envs deploy this resource)
+#   env_config:  dict of env → config keys  (env-specific overrides, merged on
+#                                            top of config: before generating)
+#
+# The generator reads the account key → resolves env → applies enabled[env]
+# and merges config + env_config[env] automatically. No other files to edit.
 # =============================================================================
 
 
@@ -21,9 +27,12 @@ tags:
 resources:
 
   # ── S3 ─────────────────────────────────────────────────────────────────────
-  - name:    app-assets
-    type:    s3
-    enabled: false
+  - name: app-assets
+    type: s3
+    enabled:
+      dev:  true
+      stg:  true
+      prod: true
     config:
       bucket_type:            standard
       versioning:             true
@@ -41,10 +50,21 @@ resources:
         filter_suffix: ".jpg"
       tags:
         DataClassification: internal
+    env_config:
+      dev:
+        expiry_days:         30
+        intelligent_tiering: false
+      stg:
+        expiry_days:         60
+      prod:
+        expiry_days:         0    # no expiry in prod
 
-  - name:    audit-logs
-    type:    s3
-    enabled: false
+  - name: audit-logs
+    type: s3
+    enabled:
+      dev:  false
+      stg:  true
+      prod: true
     config:
       bucket_type:            logging
       versioning:             false
@@ -56,15 +76,21 @@ resources:
       tags:
         DataClassification: restricted
         Retention: "90days"
+    env_config:
+      prod:
+        expiry_days: 365    # 1-year retention in prod
 
   # ── SNS ────────────────────────────────────────────────────────────────────
-  - name:    order-events
-    type:    sns
-    enabled: false
+  - name: order-events
+    type: sns
+    enabled:
+      dev:  false
+      stg:  true
+      prod: true
     config:
       fifo:         true
       display_name: "Order Events Topic"
-      kms_key_arn:  "alias/aws/sns"   # encrypted by default
+      kms_key_arn:  "alias/aws/sns"
       subscriptions:
         - protocol: email
           endpoint: ops@op2mise.com
@@ -72,9 +98,12 @@ resources:
         Component: messaging
 
   # ── SQS ────────────────────────────────────────────────────────────────────
-  - name:    order-queue
-    type:    sqs
-    enabled: false
+  - name: order-queue
+    type: sqs
+    enabled:
+      dev:  false
+      stg:  false
+      prod: true
     config:
       fifo:                        true
       content_based_deduplication: true
@@ -84,7 +113,7 @@ resources:
       max_message_size:            262144
       delay_seconds:               0
       receive_wait_time_seconds:   0
-      sqs_managed_sse_enabled:     true    # SSE-SQS encryption (zero-config)
+      sqs_managed_sse_enabled:     true
       dlq_enabled:                 false
       dlq_max_receive_count:       3
       dlq_message_retention:       1209600
@@ -94,58 +123,73 @@ resources:
         batch_size:  10
       tags:
         Component: messaging
+    env_config:
+      prod:
+        dlq_enabled:           true
+        dlq_max_receive_count: 5
+        message_retention:     604800    # 7 days in prod
 
   # ── Lambda ─────────────────────────────────────────────────────────────────
-  - name:    image-processor
-    type:    lambda
-    enabled: false
+  - name: image-processor
+    type: lambda
+    enabled:
+      dev:  true
+      stg:  true
+      prod: true
     config:
       package_type:       zip
       runtime:            python3.12
       handler:            handler.main
-      # filename:         "path/to/deployment.zip"  # custom zip package (default: placeholder.zip)
-      # source_code_hash: ""                        # base64-encoded SHA256 of the zip for change detection
+      # filename:         "path/to/deployment.zip"
+      # source_code_hash: ""
       arch:               arm64
       timeout:            30
       memory:             512
       log_retention_days: 14
       iam_role_create:    true
-      # iam_role_arn:     "arn:aws:iam::123456789012:role/my-lambda-role"  # use existing role (set iam_role_create: false)
+      # iam_role_arn:     "arn:aws:iam::123456789012:role/my-lambda-role"
       service_access:     [s3, ssm]
-      # Scope IAM to specific resources (empty = all, which is NOT recommended)
       # s3_resource_arns:  ["arn:aws:s3:::my-bucket"]
       # ssm_resource_arns: ["arn:aws:ssm:ap-south-1:*:parameter/myapp/*"]
       vpc_enabled:        false
-      # VPC config (required when vpc_enabled: true):
-      # vpc_id:           "vpc-0abc123def456"
-      # subnet_ids:       ["subnet-0aaa111", "subnet-0bbb222"]
-      # sg_create:        true
-      # existing_sg_ids:  []
       environment_variables:
         LOG_LEVEL: INFO
       permission_boundary: ""
       tags:
         Component: image-processing
+    env_config:
+      dev:
+        memory:             256
+        log_retention_days: 3
+      stg:
+        memory:             512
+        log_retention_days: 7
+      prod:
+        memory:             1024
+        timeout:            60
+        log_retention_days: 30
 
-  - name:    order-processor
-    type:    lambda
-    enabled: false
+  - name: order-processor
+    type: lambda
+    enabled:
+      dev:  false
+      stg:  false
+      prod: true
     config:
       package_type:       container
-      ecr_name:           order-processor       # ECR repo in this stack (when enabled)
-      # image_uri:        "123456789012.dkr.ecr.ap-south-1.amazonaws.com/my-repo:v1"  # use existing/external image (overrides ecr_name)
-      # image_tag:        "latest"              # tag to append when using ecr_name dependency (default: latest)
-      # image_command:    ["handler.main"]       # override container CMD
-      # image_entry_point: ["/lambda-entrypoint.sh"]  # override container ENTRYPOINT
-      # image_working_directory: "/var/task"     # override container WORKDIR
+      ecr_name:           order-processor
+      # image_uri:        "123456789012.dkr.ecr.ap-south-1.amazonaws.com/my-repo:v1"
+      # image_tag:        "latest"
+      # image_command:    ["handler.main"]
+      # image_entry_point: ["/lambda-entrypoint.sh"]
+      # image_working_directory: "/var/task"
       arch:               arm64
       timeout:            60
       memory:             1024
       log_retention_days: 14
       iam_role_create:    true
-      # iam_role_arn:     ""  # use existing role (set iam_role_create: false)
+      # iam_role_arn:     ""
       service_access:     [sqs, dynamodb]
-      # Scope IAM to specific resources
       # sqs_resource_arns:      ["arn:aws:sqs:ap-south-1:*:my-queue"]
       # dynamodb_resource_arns: ["arn:aws:dynamodb:ap-south-1:*:table/my-table"]
       vpc_enabled:        false
@@ -153,11 +197,19 @@ resources:
         LOG_LEVEL: INFO
       tags:
         Component: order-processing
+    env_config:
+      prod:
+        memory:             2048
+        timeout:            120
+        log_retention_days: 30
 
   # ── ECR ────────────────────────────────────────────────────────────────────
-  - name:    order-processor
-    type:    ecr
-    enabled: false
+  - name: order-processor
+    type: ecr
+    enabled:
+      dev:  false
+      stg:  false
+      prod: true
     config:
       scan_on_push:               true
       tag_immutability:           true
@@ -166,11 +218,17 @@ resources:
       lambda_integration_enabled: false
       tags:
         Component: order-processing
+    env_config:
+      prod:
+        max_image_count: 50
 
   # ── EC2 ────────────────────────────────────────────────────────────────────
-  - name:    api-server
-    type:    ec2
-    enabled: true
+  - name: api-server
+    type: ec2
+    enabled:
+      dev:  false
+      stg:  true
+      prod: true
     config:
       arch:          arm64
       os:            ubuntu
@@ -178,7 +236,7 @@ resources:
 
       # AMI — "auto" picks latest for os+arch, or specify a specific AMI ID
       ami:           auto
-      # ami:         ami-0abcdef1234567890   # pin to a specific AMI
+      # ami:         ami-0abcdef1234567890
 
       key_pair_create:        true
       existing_key_pair_name: ""
@@ -227,11 +285,18 @@ resources:
       tags:
         Component:   api
         Application: order-service
+    env_config:
+      prod:
+        instance_type:         t4g.xlarge
+        argus_monitoring:      on
 
   # ── CloudFront ─────────────────────────────────────────────────────────────
-  - name:    cdn
-    type:    cloudfront
-    enabled: false
+  - name: cdn
+    type: cloudfront
+    enabled:
+      dev:  false
+      stg:  false
+      prod: true
     config:
       origins:
         - s3_bucket_name: app-assets
@@ -247,10 +312,10 @@ resources:
       # WAF — set waf_enabled: true to protect the distribution
       waf_enabled: false
       waf:
-        create:             true      # true = create new WAF ACL, false = use existing waf_web_acl_id
-        waf_web_acl_id:     ""        # ARN of existing WAF ACL (when create: false)
+        create:             true
+        waf_web_acl_id:     ""
         rate_limit_enabled: true
-        rate_limit:         2000      # max requests per 5 minutes per IP
+        rate_limit:         2000
 
       # Custom domain aliases (requires ACM certificate)
       # aliases:             ["cdn.example.com"]
@@ -262,3 +327,6 @@ resources:
       price_class:         PriceClass_All
       tags:
         Component: cdn
+    env_config:
+      prod:
+        waf_enabled: true

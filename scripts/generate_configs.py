@@ -17,7 +17,7 @@ Single-resource destroy:
   The destroy workflow reads generated_modules.txt so only that one runs.
 """
 
-import sys, json, yaml, argparse, copy
+import sys, json, yaml, argparse, shutil
 from pathlib import Path
 
 
@@ -42,44 +42,32 @@ def to_bool(val, default: bool = False) -> bool:
     return str(val).lower() in ("true", "on", "yes", "1")
 
 
-def merge_env_overlay(base: dict, overlay: dict) -> dict:
-    """Deep-merge an environment overlay onto the base input.yaml config.
+def resolve_enabled(r: dict, env: str) -> bool:
+    """Resolve whether a resource is enabled for a given environment.
 
-    Rules:
-      - overlay tags:     merged on top of base tags (overlay wins on conflict)
-      - overlay resources: matched by type+name; overlay wins per-key for both
-                           top-level fields (enabled) and config sub-keys.
-                           Resources in the overlay that don't exist in base
-                           are silently ignored (they can't be generated without
-                           a full definition in base).
+    enabled: can be:
+      - bool (true/false)  → applies to ALL environments (backward compat)
+      - dict               → per-env toggle, e.g. {dev: true, stg: false, prod: true}
+                             If the env key is missing from the dict, defaults to False.
     """
-    result = copy.deepcopy(base)
+    enabled = r.get("enabled", True)
+    if isinstance(enabled, bool):
+        return enabled
+    if isinstance(enabled, dict):
+        return bool(enabled.get(env, False))
+    return True
 
-    # Merge common tags
-    if "tags" in overlay:
-        result["tags"] = {**result.get("tags", {}), **overlay["tags"]}
 
-    # Index overlay resources by (type, name) for O(1) lookup
-    overlay_map = {
-        (r["type"], r["name"]): r
-        for r in overlay.get("resources", [])
-        if "type" in r and "name" in r
-    }
+def resolve_config(r: dict, env: str) -> dict:
+    """Merge base config with env_config[env] overrides.
 
-    for i, r in enumerate(result.get("resources", [])):
-        key = (r.get("type"), r.get("name"))
-        if key not in overlay_map:
-            continue
-        ov = overlay_map[key]
-        # enabled is a top-level field — override if explicitly set
-        if "enabled" in ov:
-            result["resources"][i]["enabled"] = ov["enabled"]
-        # config keys are merged; overlay wins on any key it specifies
-        if "config" in ov:
-            base_cfg = result["resources"][i].get("config", {})
-            result["resources"][i]["config"] = {**base_cfg, **ov["config"]}
-
-    return result
+    env_config is optional. When present, keys in env_config[env] win over
+    the same keys in config, allowing per-environment sizing/flags without
+    duplicating the full config block.
+    """
+    base     = r.get("config", {})
+    env_over = r.get("env_config", {}).get(env, {})
+    return {**base, **env_over}
 
 
 def load_accounts(repo_root):
@@ -136,11 +124,11 @@ def extra_tags_hcl(cfg: dict, indent: int = 2) -> str:
     return f"{pad}extra_tags = {{\n{lines}\n{pad}}}"
 
 
-def is_enabled(all_resources, rtype, rname):
-    """Check if a resource of given type+name is enabled."""
+def is_enabled(all_resources, rtype, rname, env: str) -> bool:
+    """Check if a resource of given type+name is enabled for the given environment."""
     for r in all_resources:
-        if r["type"] == rtype and r["name"] == rname and r.get("enabled", True):
-            return True
+        if r["type"] == rtype and r["name"] == rname:
+            return resolve_enabled(r, env)
     return False
 
 
@@ -154,7 +142,7 @@ def gen_s3(r, ctx):
     lambda_name = lt.get("lambda_name", "")
 
     # Only wire trigger when lambda is also enabled
-    trigger_active = lt_enabled and lambda_name and is_enabled(ctx["all_resources"], "lambda", lambda_name)
+    trigger_active = lt_enabled and lambda_name and is_enabled(ctx["all_resources"], "lambda", lambda_name, ctx["env"])
 
     dep_block     = ""
     lambda_inputs = ""
@@ -331,7 +319,7 @@ def gen_lambda(r, ctx):
         if explicit_image_uri:
             # User provided image_uri directly (external ECR, Docker Hub, etc.)
             extra_inputs.append(f'  image_uri = "{hcl_escape(explicit_image_uri)}"')
-        elif is_enabled(ctx["all_resources"], "ecr", ecr_name):
+        elif is_enabled(ctx["all_resources"], "ecr", ecr_name, ctx["env"]):
             dep_var  = f"ecr_{ecr_name.replace('-','_')}"
             dep_path = f"../ecr-{ecr_name}"
             dep_blocks.append(mock_dep(dep_var, dep_path, {
@@ -366,7 +354,7 @@ def gen_lambda(r, ctx):
 
     # SQS trigger (only if SQS is enabled)
     sqs_cfg = ctx.get("sqs_triggers", {}).get(r["name"])
-    if sqs_cfg and is_enabled(ctx["all_resources"], "sqs", sqs_cfg["sqs_name"]):
+    if sqs_cfg and is_enabled(ctx["all_resources"], "sqs", sqs_cfg["sqs_name"], ctx["env"]):
         sqs_name = sqs_cfg["sqs_name"]
         dep_var  = f"sqs_{sqs_name.replace('-','_')}"
         dep_path = f"../sqs-{sqs_name}"
@@ -382,7 +370,7 @@ def gen_lambda(r, ctx):
 
     # SNS trigger (only if SNS is enabled)
     sns_cfg = ctx.get("sns_triggers", {}).get(r["name"])
-    if sns_cfg and is_enabled(ctx["all_resources"], "sns", sns_cfg["sns_name"]):
+    if sns_cfg and is_enabled(ctx["all_resources"], "sns", sns_cfg["sns_name"], ctx["env"]):
         sns_name = sns_cfg["sns_name"]
         dep_var  = f"sns_{sns_name.replace('-','_')}"
         dep_path = f"../sns-{sns_name}"
@@ -580,7 +568,7 @@ def gen_cloudfront(r, ctx):
         otype     = o.get("origin_type", "s3")
         opath     = o.get("origin_path", "")
 
-        if s3_bucket and is_enabled(ctx["all_resources"], "s3", s3_bucket):
+        if s3_bucket and is_enabled(ctx["all_resources"], "s3", s3_bucket, ctx["env"]):
             dep_var  = f"s3_{s3_bucket.replace('-','_')}"
             dep_path = f"../s3-{s3_bucket}"
             dep_blocks.append(mock_dep(dep_var, dep_path, {
@@ -685,11 +673,11 @@ GENERATORS = {
 }
 
 
-def build_trigger_context(all_resources):
+def build_trigger_context(all_resources, env: str):
     sqs_triggers = {}
     sns_triggers = {}
     for r in all_resources:
-        if not r.get("enabled", True):
+        if not resolve_enabled(r, env):
             continue
         lt = r.get("config", {}).get("lambda_trigger", {})
         if r["type"] == "sqs" and lt.get("enabled") and lt.get("lambda_name"):
@@ -734,27 +722,23 @@ def main():
     project     = acct.get("project_name", acct.get("project", ""))
     name_prefix = acct.get("name_prefix", env)
 
-    # Apply environment-specific overlay (envs/<env>.yaml) if it exists.
-    # Overlay keys win over base input.yaml on a per-field basis.
-    overlay_path = Path(args.repo_root) / "envs" / f"{env}.yaml"
-    if overlay_path.exists():
-        try:
-            with open(overlay_path) as f:
-                overlay = yaml.safe_load(f) or {}
-            data = merge_env_overlay(data, overlay)
-            all_resources = data.get("resources", [])
-            print(f"[INFO] Env overlay applied: {overlay_path}")
-        except yaml.YAMLError as e:
-            print(f"[ERROR] Failed to parse {overlay_path}: {e}")
-            sys.exit(1)
-    else:
-        print(f"[INFO] No env overlay found at {overlay_path} — using base input.yaml only")
+    # Resolve enabled/disabled per environment using resolve_enabled().
+    # enabled: in input.yaml can be a bool (all envs) or dict {dev, stg, prod}.
+    enabled  = [r for r in all_resources if     resolve_enabled(r, env)]
+    disabled = [r for r in all_resources if not resolve_enabled(r, env)]
 
-    enabled = [r for r in all_resources if r.get("enabled", True)]
-
-    ctx = build_trigger_context(all_resources)
+    ctx = build_trigger_context(all_resources, env)
     ctx.update({"env": env, "region": region, "project": project,
                 "name_prefix": name_prefix, "all_resources": all_resources})
+
+    # Remove stale live/<env>/<type>-<name>/ dirs for DISABLED resources.
+    # Without this, old terragrunt.hcl files survive on disk after a resource is
+    # disabled, causing `terragrunt run-all plan` to pick them up unexpectedly.
+    for r in disabled:
+        stale_dir = resource_dir(args.repo_root, env, r["type"], r["name"])
+        if stale_dir.exists():
+            shutil.rmtree(stale_dir)
+            print(f"[CLEAN] Removed stale dir: {stale_dir}")
 
     # Apply order: dependencies before dependents
     TYPE_ORDER = {"ecr": 0, "sns": 1, "sqs": 2, "lambda": 3, "s3": 4, "ec2": 5, "cloudfront": 6}
@@ -768,6 +752,8 @@ def main():
         if not gen:
             print(f"[SKIP] No generator for type '{rtype}'")
             continue
+        # Merge base config with env_config[env] overrides before generating.
+        r = {**r, "config": resolve_config(r, env)}
         out_dir  = resource_dir(args.repo_root, env, rtype, rname)
         out_dir.mkdir(parents=True, exist_ok=True)
         hcl_path = out_dir / "terragrunt.hcl"

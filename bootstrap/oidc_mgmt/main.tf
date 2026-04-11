@@ -36,7 +36,7 @@ variable "target_account_ids" {
 
 variable "target_role_name" {
   type    = string
-  default = "admin-role"
+  default = "deploy-role"
 }
 
 variable "tf_state_bucket_name" {
@@ -46,6 +46,25 @@ variable "tf_state_bucket_name" {
 variable "aws_region" {
   type    = string
   default = "ap-south-1"
+}
+
+variable "protected_branches" {
+  type        = list(string)
+  default     = ["main"]
+  description = "Branches allowed to trigger deployments via this OIDC role. Wildcard (*) is intentionally NOT used."
+}
+
+# ── KMS key for TF state bucket ───────────────────────────────────────────────
+resource "aws_kms_key" "tf_state" {
+  description             = "KMS key for Terraform state bucket encryption"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+  tags                    = { ManagedBy = "terraform", Purpose = "tf-state-encryption" }
+}
+
+resource "aws_kms_alias" "tf_state" {
+  name          = "alias/tf-state-key"
+  target_key_id = aws_kms_key.tf_state.key_id
 }
 
 # ── OIDC Provider ──────────────────────────────────────────────────────────────
@@ -70,10 +89,16 @@ data "aws_iam_policy_document" "oidc_assume" {
       identifiers = [aws_iam_openid_connect_provider.github.arn]
     }
 
+    # Scope to specific protected branches only — never use a wildcard "*" here.
+    # environment:* allows GitHub environment-gated jobs (approval gates).
+    # ref:refs/heads/<branch> allows workflow_dispatch / push from that branch.
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_org}/${var.github_repo}:*"]
+      values = concat(
+        [for b in var.protected_branches : "repo:${var.github_org}/${var.github_repo}:ref:refs/heads/${b}"],
+        ["repo:${var.github_org}/${var.github_repo}:environment:*"]
+      )
     }
 
     condition {
@@ -112,6 +137,16 @@ data "aws_iam_policy_document" "oidc_perms" {
       "arn:aws:s3:::${var.tf_state_bucket_name}/*",
     ]
   }
+
+  statement {
+    sid = "TFStateKMS"
+    actions = [
+      "kms:Decrypt",
+      "kms:GenerateDataKey",
+      "kms:DescribeKey",
+    ]
+    resources = [aws_kms_key.tf_state.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "oidc" {
@@ -139,8 +174,10 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "tf_state" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.tf_state.arn
     }
+    bucket_key_enabled = true  # reduces KMS API call cost ~99%
   }
 }
 
@@ -212,4 +249,9 @@ output "oidc_role_arn" {
 
 output "tf_state_bucket" {
   value = aws_s3_bucket.tf_state.bucket
+}
+
+output "tf_state_kms_key_arn" {
+  value       = aws_kms_key.tf_state.arn
+  description = "KMS key ARN used for state bucket SSE — add to target_role KMSRead resources if you want to scope it further"
 }
