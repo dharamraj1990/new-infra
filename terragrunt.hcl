@@ -46,7 +46,7 @@ locals {
   # State backend — S3 native locking (Terraform 1.10+), no DynamoDB needed
   mgmt_account_id   = get_env("MGMT_ACCOUNT_ID", local.account_id)
   tf_state_bucket   = "tfstate-${local.mgmt_account_id}-${local.region}"
-  tf_state_key      = "${local.environment}/${local.region}/${local.project}/${path_relative_to_include()}/terraform.tfstate"
+  tf_state_key      = "${local.environment}/${local.region}/${local.project}/${basename(path_relative_to_include())}/terraform.tfstate"
 
   # Tags — Environment tag uses full env name, not the short prefix
   common_tags = merge(local.global_extra_tags, {
