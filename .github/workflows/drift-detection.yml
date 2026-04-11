@@ -47,8 +47,13 @@ jobs:
 
       - name: Setup Terragrunt
         run: |
-          curl -sLo /usr/local/bin/terragrunt \
-            "https://github.com/gruntwork-io/terragrunt/releases/download/v${{ env.TG_VERSION }}/terragrunt_linux_amd64"
+          TG_VER="${{ env.TG_VERSION }}"
+          BASE="https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VER}"
+          curl -sLo /usr/local/bin/terragrunt    "${BASE}/terragrunt_linux_amd64"
+          curl -sLo /tmp/tg_sha256sums.txt       "${BASE}/SHA256SUMS"
+          grep "terragrunt_linux_amd64" /tmp/tg_sha256sums.txt \
+            | awk '{print $1 "  /usr/local/bin/terragrunt"}' \
+            | sha256sum -c -
           chmod +x /usr/local/bin/terragrunt
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0

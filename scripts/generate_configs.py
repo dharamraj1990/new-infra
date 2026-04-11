@@ -17,13 +17,69 @@ Single-resource destroy:
   The destroy workflow reads generated_modules.txt so only that one runs.
 """
 
-import sys, json, yaml, argparse
+import sys, json, yaml, argparse, copy
 from pathlib import Path
 
 
 def hcl_escape(val) -> str:
     """Escape a value for safe embedding in HCL quoted strings."""
     return str(val).replace('\\', '\\\\').replace('"', '\\"')
+
+
+def to_bool(val, default: bool = False) -> bool:
+    """Coerce YAML-parsed values to bool.
+
+    Handles:
+      - Python bool (True/False) — from YAML true/false, on/off (unquoted)
+      - String "on"/"off"/"true"/"false"/"yes"/"no" — from quoted YAML values
+      - None — returns default
+    This makes boolean inputs in input.yaml robust against quoting accidents.
+    """
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return default
+    return str(val).lower() in ("true", "on", "yes", "1")
+
+
+def merge_env_overlay(base: dict, overlay: dict) -> dict:
+    """Deep-merge an environment overlay onto the base input.yaml config.
+
+    Rules:
+      - overlay tags:     merged on top of base tags (overlay wins on conflict)
+      - overlay resources: matched by type+name; overlay wins per-key for both
+                           top-level fields (enabled) and config sub-keys.
+                           Resources in the overlay that don't exist in base
+                           are silently ignored (they can't be generated without
+                           a full definition in base).
+    """
+    result = copy.deepcopy(base)
+
+    # Merge common tags
+    if "tags" in overlay:
+        result["tags"] = {**result.get("tags", {}), **overlay["tags"]}
+
+    # Index overlay resources by (type, name) for O(1) lookup
+    overlay_map = {
+        (r["type"], r["name"]): r
+        for r in overlay.get("resources", [])
+        if "type" in r and "name" in r
+    }
+
+    for i, r in enumerate(result.get("resources", [])):
+        key = (r.get("type"), r.get("name"))
+        if key not in overlay_map:
+            continue
+        ov = overlay_map[key]
+        # enabled is a top-level field — override if explicitly set
+        if "enabled" in ov:
+            result["resources"][i]["enabled"] = ov["enabled"]
+        # config keys are merged; overlay wins on any key it specifies
+        if "config" in ov:
+            base_cfg = result["resources"][i].get("config", {})
+            result["resources"][i]["config"] = {**base_cfg, **ov["config"]}
+
+    return result
 
 
 def load_accounts(repo_root):
@@ -70,8 +126,8 @@ def mock_dep(dep_var, dep_path, mock_outputs: dict):
 
 
 def extra_tags_hcl(cfg: dict, indent: int = 2) -> str:
-    """Render extra_tags from resource config as HCL map input."""
-    tags = cfg.get("extra_tags", {})
+    """Render per-resource tags from resource config as HCL map input."""
+    tags = cfg.get("tags", {})
     if not tags:
         return " " * indent + 'extra_tags = {}'
     pad   = " " * indent
@@ -401,8 +457,22 @@ inputs = {{
 # ─────────────────────────────────────────────────────────────────────────────
 # EC2
 # ─────────────────────────────────────────────────────────────────────────────
+_EC2_VPC_PLACEHOLDERS = {"", "vpc-xxxxxxxxx", "vpc-xxx"}
+_EC2_SUBNET_PLACEHOLDERS = {"", "subnet-xxxxxxxxx", "subnet-xxx"}
+
+
 def gen_ec2(r, ctx):
     cfg = r.get("config", {})
+
+    # ── VPC / subnet validation ────────────────────────────────────────────────
+    vpc_id    = cfg.get("vpc_id", "")
+    subnet_id = cfg.get("subnet_id", "")
+    if vpc_id in _EC2_VPC_PLACEHOLDERS:
+        print(f"[ERROR] EC2 '{r['name']}': vpc_id is required — set a real VPC ID (e.g. vpc-0abc1234)")
+        sys.exit(1)
+    if subnet_id in _EC2_SUBNET_PLACEHOLDERS:
+        print(f"[ERROR] EC2 '{r['name']}': subnet_id is required — set a real subnet ID (e.g. subnet-0abc1234)")
+        sys.exit(1)
 
     key_hcl = f"""\
   key_pair_create        = {str(cfg.get("key_pair_create",True)).lower()}
@@ -416,6 +486,8 @@ def gen_ec2(r, ctx):
 
     ingress = cfg.get("ingress_rules", [])
     ingress_hcl = ""
+    if ingress and not sg_create:
+        print(f"[WARN] EC2 '{r['name']}': ingress_rules defined but sg_create=false — rules are ignored (applied to existing_sg_ids instead)")
     if ingress and sg_create:
         items = []
         for rule in ingress:
@@ -472,8 +544,8 @@ inputs = {{
   os             = "{cfg.get("os","ubuntu")}"
   instance_type  = "{cfg.get("instance_type","t4g.small")}"
   ami            = "{cfg.get("ami","auto")}"
-  vpc_id         = "{hcl_escape(cfg.get("vpc_id","vpc-xxxxxxxxx"))}"
-  subnet_id      = "{hcl_escape(cfg.get("subnet_id","subnet-xxxxxxxxx"))}"
+  vpc_id         = "{hcl_escape(vpc_id)}"
+  subnet_id      = "{hcl_escape(subnet_id)}"
   imdsv2_enabled = {str(cfg.get("imdsv2_enabled",True)).lower()}
   ebs_encryption = "{hcl_escape(cfg.get("ebs_encryption","default"))}"
   ebs_kms_key_arn= "{hcl_escape(cfg.get("ebs_kms_key_arn",""))}"
@@ -483,8 +555,8 @@ inputs = {{
 {iam_hcl}
 {asg_hcl}
 {ebs_hcl}
-  prometheus_monitoring = {str(cfg.get("prometheus_monitoring", False)).lower()}
-  argus_monitoring      = {str(cfg.get("argus_monitoring", False)).lower()}
+  prometheus_monitoring = {str(to_bool(cfg.get("prometheus_monitoring"), default=False)).lower()}
+  argus_monitoring      = {str(to_bool(cfg.get("argus_monitoring"),      default=False)).lower()}
 {user_data_hcl}
 {extra_tags_hcl(cfg)}
 }}
@@ -644,7 +716,6 @@ def main():
         if not isinstance(r, dict) or "type" not in r or "name" not in r:
             print(f"[ERROR] Resource at index {i} must be a dict with 'type' and 'name' keys")
             sys.exit(1)
-    enabled = [r for r in all_resources if r.get("enabled", True)]
 
     # Account key comes from --account CLI arg (set by CI from workflow dropdown).
     # Falls back to data["account"] for local runs where input.yaml still has the key.
@@ -662,6 +733,24 @@ def main():
     region      = acct["region"]
     project     = acct.get("project_name", acct.get("project", ""))
     name_prefix = acct.get("name_prefix", env)
+
+    # Apply environment-specific overlay (envs/<env>.yaml) if it exists.
+    # Overlay keys win over base input.yaml on a per-field basis.
+    overlay_path = Path(args.repo_root) / "envs" / f"{env}.yaml"
+    if overlay_path.exists():
+        try:
+            with open(overlay_path) as f:
+                overlay = yaml.safe_load(f) or {}
+            data = merge_env_overlay(data, overlay)
+            all_resources = data.get("resources", [])
+            print(f"[INFO] Env overlay applied: {overlay_path}")
+        except yaml.YAMLError as e:
+            print(f"[ERROR] Failed to parse {overlay_path}: {e}")
+            sys.exit(1)
+    else:
+        print(f"[INFO] No env overlay found at {overlay_path} — using base input.yaml only")
+
+    enabled = [r for r in all_resources if r.get("enabled", True)]
 
     ctx = build_trigger_context(all_resources)
     ctx.update({"env": env, "region": region, "project": project,

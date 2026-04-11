@@ -1,28 +1,29 @@
 # =============================================================================
 # input.yaml — SINGLE source of truth.
 # Switch projects by changing "account" key (matches accounts/accounts.yaml).
-# All metadata tags flow to every resource automatically.
+# Common tags flow to every resource; per-resource tags: blocks add/override.
 # =============================================================================
 
 
-# ── Metadata — applied as tags to ALL resources ────────────────────────────
-metadata:
-  stage:      stg              # e.g. dev | stg | prod | sandbox | perf
-  owner:      platform-team    # team/person responsible
-  component:  backend          # logical component: backend | frontend | data | infra
-  cost_center: "CC-1001"       # billing/cost allocation code
-  # Any additional tags applied to ALL resources
-  extra_tags:
-    Terraform:    "true"
-    Repo:         "infra-frame-work"
-    Compliance:   "pci-dss"
+# ── Common tags — applied to ALL resources ─────────────────────────────────
+# Two-level tag system:
+#   1. Here (tags:)         — global defaults, every resource gets these
+#   2. Per-resource (tags:) — additions/overrides on top of the common set
+tags:
+  stage:       stg              # e.g. dev | stg | prod | sandbox | perf
+  owner:       platform-team    # team/person responsible
+  component:   backend          # logical component: backend | frontend | data | infra
+  cost_center: "CC-1001"        # billing/cost allocation code
+  Terraform:   "true"
+  Repo:        "infra-frame-work"
+  Compliance:  "pci-dss"
 
 resources:
 
   # ── S3 ─────────────────────────────────────────────────────────────────────
   - name:    app-assets
     type:    s3
-    enabled: true
+    enabled: false
     config:
       bucket_type:            standard
       versioning:             true
@@ -38,8 +39,7 @@ resources:
         events:        ["s3:ObjectCreated:*"]
         filter_prefix: "uploads/"
         filter_suffix: ".jpg"
-      # Per-resource extra tags (merged on top of global metadata.extra_tags)
-      extra_tags:
+      tags:
         DataClassification: internal
 
   - name:    audit-logs
@@ -53,7 +53,7 @@ resources:
       intelligent_tiering:    false
       expiry_days:            90
       access_log_bucket_name: ""
-      extra_tags:
+      tags:
         DataClassification: restricted
         Retention: "90days"
 
@@ -68,7 +68,7 @@ resources:
       subscriptions:
         - protocol: email
           endpoint: ops@op2mise.com
-      extra_tags:
+      tags:
         Component: messaging
 
   # ── SQS ────────────────────────────────────────────────────────────────────
@@ -92,13 +92,13 @@ resources:
         enabled:     false
         lambda_name: order-processor
         batch_size:  10
-      extra_tags:
+      tags:
         Component: messaging
 
   # ── Lambda ─────────────────────────────────────────────────────────────────
   - name:    image-processor
     type:    lambda
-    enabled: true
+    enabled: false
     config:
       package_type:       zip
       runtime:            python3.12
@@ -124,7 +124,7 @@ resources:
       environment_variables:
         LOG_LEVEL: INFO
       permission_boundary: ""
-      extra_tags:
+      tags:
         Component: image-processing
 
   - name:    order-processor
@@ -151,7 +151,7 @@ resources:
       vpc_enabled:        false
       environment_variables:
         LOG_LEVEL: INFO
-      extra_tags:
+      tags:
         Component: order-processing
 
   # ── ECR ────────────────────────────────────────────────────────────────────
@@ -164,13 +164,13 @@ resources:
       encryption:                 AES256
       max_image_count:            100
       lambda_integration_enabled: false
-      extra_tags:
+      tags:
         Component: order-processing
 
   # ── EC2 ────────────────────────────────────────────────────────────────────
   - name:    api-server
     type:    ec2
-    enabled: false
+    enabled: true
     config:
       arch:          arm64
       os:            ubuntu
@@ -183,8 +183,8 @@ resources:
       key_pair_create:        true
       existing_key_pair_name: ""
 
-      sg_create:       true
-      existing_sg_ids: []
+      sg_create:       false
+      existing_sg_ids: ["sg-093b250b42b59d761"]
       ingress_rules:
         - from_port:   22
           to_port:     22
@@ -198,8 +198,8 @@ resources:
           description: "HTTPS"
 
       # VPC + Subnet are REQUIRED — do not deploy into default VPC
-      vpc_id:    "vpc-xxxxxxxxx"
-      subnet_id: "subnet-xxxxxxxxx"
+      vpc_id:    "vpc-0ee2b63f8be992131"
+      subnet_id: "subnet-0a74de6bc4c76a1b4"
 
       asg_enabled: false
 
@@ -210,8 +210,8 @@ resources:
           size:        30
           type:        gp3
 
-      iam_role_create:           true
-      iam_role_name:             ""
+      iam_role_create:           false
+      iam_role_name:             "admin-role"
       existing_instance_profile: ""
       imdsv2_enabled:            true
 
@@ -221,10 +221,10 @@ resources:
       #   yum update -y
 
       # ── EC2 monitoring integrations ──────────────────────────────────────
-      prometheus_monitoring: true
-      argus_monitoring:      false
+      prometheus_monitoring: on
+      argus_monitoring:      off
 
-      extra_tags:
+      tags:
         Component:   api
         Application: order-service
 
@@ -260,5 +260,5 @@ resources:
       logging_enabled:     false
       logging_bucket_name: ""
       price_class:         PriceClass_All
-      extra_tags:
+      tags:
         Component: cdn

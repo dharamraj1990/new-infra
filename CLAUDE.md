@@ -4,14 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Repo Is
 
-Multi-account AWS infrastructure framework using **Terragrunt + Terraform** with **GitHub Actions OIDC** for keyless auth. A single `input.yaml` declares all resources; a Python code-generator produces per-resource Terragrunt configs under `live/`.
+Multi-account AWS infrastructure framework using **Terragrunt + Terraform** with **GitHub Actions OIDC** for keyless auth. `input.yaml` declares the base resource set; per-environment `envs/<env>.yaml` files overlay environment-specific values. The Python code-generator merges them and produces per-resource Terragrunt configs under `live/`.
 
 ## Key Architecture Decisions
 
-- **Single source of truth chain**: `accounts/accounts.yaml` (keyed by account slug like `mamstg`, `mamprd`) holds all stack metadata (environment, region, project, account_id, role_name). `input.yaml` holds only `metadata:` (tags) and `resources:` (resource declarations). Account key flows from GitHub Actions `workflow_dispatch` dropdown → `TF_ACCOUNT_KEY` env var → `terragrunt.hcl` + `generate_configs.py --account`.
+- **Single source of truth chain**: `accounts/accounts.yaml` (keyed by account slug like `mamstg`, `mamprd`) holds all stack metadata (environment, region, project, account_id, role_name). `input.yaml` holds only `tags:` (common tags) and `resources:` (resource declarations). Account key flows from GitHub Actions `workflow_dispatch` dropdown → `TF_ACCOUNT_KEY` env var → `terragrunt.hcl` + `generate_configs.py --account`.
+- **Two-level tag system**: `tags:` at the top of `input.yaml` are common tags applied to every resource. Each resource can define its own `tags:` block under `config:` to add or override specific keys. The HCL output variable is still named `extra_tags` (what Terraform modules expect).
+- **Monitoring toggles use `on`/`off`**: `prometheus_monitoring` and `argus_monitoring` in EC2 config use `on`/`off` (not `true`/`false`). PyYAML parses them as booleans — no generator changes needed.
 - **No static env/region/project in input.yaml**: These are always derived from `accounts/accounts.yaml` via the account key. Never add them back to `input.yaml`.
 - **Flat live/ layout**: `live/<env>/<type>-<name>/terragrunt.hcl` — no nested region or project folders. The `env` directory name comes from `accounts.yaml[key].environment`.
 - **name_prefix vs environment**: `name_prefix` (e.g. `stg`, `prd`, `dev`) drives all resource names. `environment` (e.g. `stg`, `prod`, `dev`) is used only for tags and state paths. They can differ.
+- **Per-environment overlays**: `envs/<env>.yaml` (dev/stg/prod) is deep-merged on top of `input.yaml` after the account is resolved. Only specify keys that differ — `enabled` and any `config` sub-keys. Base values not mentioned in the overlay are kept unchanged. This is where environment-specific sizing, retention, and feature flags live.
 - **Smart dependency wiring**: `generate_configs.py` only adds Terragrunt `dependency` blocks when the target resource is also `enabled: true`. Disabled dependencies are silently skipped to prevent "no outputs" errors.
 - **Deployment order**: `generate_configs.py` sorts by `TYPE_ORDER` (ecr → sns → sqs → lambda → s3 → ec2 → cloudfront). Destroy runs in reverse.
 
@@ -44,7 +47,20 @@ terragrunt apply
 ```
 
 ### Python dependencies
-Scripts require `pyyaml`. No requirements.txt — install with `pip install pyyaml`.
+```bash
+pip install -r scripts/requirements.txt   # pyyaml, boto3
+```
+
+### Override a single resource config for one environment only
+Edit `envs/<env>.yaml` — only list the keys that differ:
+```yaml
+# envs/prod.yaml
+resources:
+  - name: api-server
+    type: ec2
+    config:
+      instance_type: t4g.xlarge   # prod gets a bigger box
+```
 
 ## CI/CD Workflows
 
@@ -62,6 +78,24 @@ GitHub Environments needed: `dev-approval`, `stg-approval`, `prod-approval` (wit
 All resources: `<name_prefix>-<region>-<project>-<type>-<name>`
 
 Example: `stg-ap-south-1-mam-lambda-image-processor`
+
+## Environment Overlay System
+
+The two-file model for every change:
+
+| What changes | Where to edit |
+|---|---|
+| Resource definition, shape, wiring | `input.yaml` |
+| Whether it's on/off per env | `envs/<env>.yaml` → `enabled: true/false` |
+| Sizing/config per env (memory, instance_type, retention) | `envs/<env>.yaml` → `config:` sub-keys |
+| Tags for all resources globally | `input.yaml` → `tags:` |
+| Tags for one env | `envs/<env>.yaml` → `tags:` |
+
+Overlay merge rules:
+- `tags:` in env file is merged on top of base (`input.yaml`) tags — env wins on conflict
+- `resources:` matched by `type` + `name`. Unknown resources in the overlay are silently skipped
+- `enabled:` in overlay overrides base enabled state
+- `config:` keys in overlay override base config per-key — unchanged keys are kept from base
 
 ## Adding a New Resource Type
 

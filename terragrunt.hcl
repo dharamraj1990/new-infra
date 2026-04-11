@@ -33,12 +33,15 @@ locals {
   account_id  = local.account_cfg.account_id
   project     = local.account_cfg.project_name
 
-  # Metadata (all optional — try() with safe defaults)
-  stage       = try(local.input.metadata.stage,       local.environment)
-  owner       = try(local.input.metadata.owner,       try(local.account_cfg.owner, "unknown"))
-  component   = try(local.input.metadata.component,   "general")
-  cost_center = try(local.input.metadata.cost_center, try(local.account_cfg.cost_center, ""))
-  global_extra_tags = try(local.input.metadata.extra_tags, {})
+  # Common tags (all optional — try() with safe defaults).
+  # Known structured fields are read individually; everything else in tags: flows
+  # through as-is so users can add arbitrary common tags without touching this file.
+  stage       = try(local.input.tags.stage,       local.environment)
+  owner       = try(local.input.tags.owner,       try(local.account_cfg.owner, "unknown"))
+  component   = try(local.input.tags.component,   "general")
+  cost_center = try(local.input.tags.cost_center, try(local.account_cfg.cost_center, ""))
+  # All tags: entries that are NOT one of the structured fields above become extra tags
+  global_extra_tags = {for k, v in try(local.input.tags, {}) : k => v if !contains(["stage", "owner", "component", "cost_center"], k)}
 
   # State backend — S3 native locking (Terraform 1.10+), no DynamoDB needed
   mgmt_account_id   = get_env("MGMT_ACCOUNT_ID", local.account_id)

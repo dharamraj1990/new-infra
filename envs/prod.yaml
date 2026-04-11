@@ -1,0 +1,86 @@
+# =============================================================================
+# envs/prod.yaml — Production environment overrides
+#
+# This file is deep-merged on top of input.yaml when deploying to any account
+# whose environment = "prod" (e.g. mamprd, mntprd, op2mise-prod).
+#
+# Rules:
+#   - Only specify keys you want to CHANGE from the base input.yaml.
+#   - tags:    merged on top of base tags (these keys win).
+#   - resources: matched by type+name. enabled and config keys are overridden
+#                per-key — you don't need to repeat unchanged config.
+# =============================================================================
+
+tags:
+  Compliance: "pci-dss"          # reiterate compliance tag for prod
+
+resources:
+
+  # ── S3 ─────────────────────────────────────────────────────────────────────
+  - name: app-assets
+    type: s3
+    enabled: true
+    config:
+      lifecycle_enabled:   true
+      expiry_days:         0          # no expiry in prod
+      intelligent_tiering: true
+
+  - name: audit-logs
+    type: s3
+    enabled: true
+    config:
+      expiry_days: 365               # 1-year retention in prod
+
+  # ── Lambda ─────────────────────────────────────────────────────────────────
+  - name: image-processor
+    type: lambda
+    enabled: true
+    config:
+      memory:             1024       # full memory in prod
+      timeout:            60
+      log_retention_days: 30
+
+  - name: order-processor
+    type: lambda
+    enabled: true
+    config:
+      memory:             2048
+      timeout:            120
+      log_retention_days: 30
+
+  # ── ECR ────────────────────────────────────────────────────────────────────
+  - name: order-processor
+    type: ecr
+    enabled: true
+    config:
+      max_image_count: 50            # fewer images kept in prod (lifecycle policy)
+
+  # ── SNS ────────────────────────────────────────────────────────────────────
+  - name: order-events
+    type: sns
+    enabled: true
+
+  # ── SQS ────────────────────────────────────────────────────────────────────
+  - name: order-queue
+    type: sqs
+    enabled: true
+    config:
+      dlq_enabled:          true     # dead-letter queue on in prod
+      dlq_max_receive_count: 5
+      message_retention:    604800   # 7 days
+
+  # ── EC2 ────────────────────────────────────────────────────────────────────
+  - name: api-server
+    type: ec2
+    enabled: true
+    config:
+      instance_type:         t4g.xlarge   # larger instance in prod
+      prometheus_monitoring: on
+      argus_monitoring:      on           # both monitoring systems on in prod
+
+  # ── CloudFront ─────────────────────────────────────────────────────────────
+  - name: cdn
+    type: cloudfront
+    enabled: true
+    config:
+      waf_enabled: true              # WAF on in prod
