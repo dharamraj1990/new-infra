@@ -22,7 +22,7 @@ resources:
   # ── S3 ─────────────────────────────────────────────────────────────────────
   - name:    app-assets
     type:    s3
-    enabled: true
+    enabled: false
     config:
       bucket_type:            standard
       versioning:             true
@@ -98,7 +98,7 @@ resources:
   # ── Lambda ─────────────────────────────────────────────────────────────────
   - name:    image-processor
     type:    lambda
-    enabled: true
+    enabled: false
     config:
       package_type:       zip
       runtime:            python3.12
@@ -170,7 +170,7 @@ resources:
   # ── EC2 ────────────────────────────────────────────────────────────────────
   - name:    api-server
     type:    ec2
-    enabled: false
+    enabled: true
     config:
       arch:          arm64
       os:            ubuntu
