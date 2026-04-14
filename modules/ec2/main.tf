@@ -3,14 +3,22 @@
 locals {
   resource_name = "${var.name_prefix}-${var.aws_region}-${var.project_name}-ec2-${var.name}"
 
+  # Base tags applied to ALL resources in this module (SM secret, SG, IAM role, etc.)
+  # Monitoring tags are intentionally excluded here — they are EC2-instance-only.
   tags = merge(var.common_tags, var.extra_tags, {
-    Name                  = local.resource_name
-    Module                = "ec2"
-    OS                    = var.os
-    Arch                  = var.arch
-    # Monitoring discovery tags — read by Prometheus/Argus scraping agents
-    PrometheusMonitoring  = tostring(var.prometheus_monitoring)
-    ArgusMonitoring       = tostring(var.argus_monitoring)
+    Name   = local.resource_name
+    Module = "ec2"
+    OS     = var.os
+    Arch   = var.arch
+  })
+
+  # Instance-only tags — applied exclusively via tag_specifications on the launch template.
+  # These propagate to EC2 instances and their volumes (not to SM, SG, IAM, ENI, etc.)
+  # Values are "on"/"off" strings — discovery scrapers expect these exact strings,
+  # not "true"/"false" which tostring(bool) would produce.
+  instance_tags = merge(local.tags, {
+    PrometheusMonitoring = var.prometheus_monitoring ? "on" : "off"
+    ArgusMonitoring      = var.argus_monitoring ? "on" : "off"
   })
 
   ami_owners = {
@@ -228,19 +236,22 @@ resource "aws_launch_template" "this" {
 
   user_data = var.user_data != "" ? base64encode(var.user_data) : null
 
+  # instance_tags includes PrometheusMonitoring/ArgusMonitoring — these propagate
+  # only to the EC2 instance, its EBS volumes, and its ENI via tag_specifications.
+  # The launch template resource itself gets local.tags (no monitoring tags).
   tag_specifications {
     resource_type = "instance"
-    tags          = local.tags
+    tags          = local.instance_tags
   }
 
   tag_specifications {
     resource_type = "volume"
-    tags          = local.tags
+    tags          = local.tags   # EBS volumes do NOT need monitoring discovery tags
   }
 
   tag_specifications {
     resource_type = "network-interface"
-    tags          = local.tags
+    tags          = local.tags   # ENIs do NOT need monitoring discovery tags
   }
 
   tags = local.tags
@@ -299,7 +310,7 @@ resource "aws_autoscaling_group" "this" {
   }
 
   dynamic "tag" {
-    for_each = local.tags
+    for_each = local.instance_tags   # propagate monitoring tags to ASG-launched instances
     content {
       key                 = tag.key
       value               = tag.value
