@@ -74,7 +74,8 @@ resource "aws_key_pair" "this" {
 # If secret already exists (e.g. scheduled for deletion), restore it first:
 #   aws secretsmanager restore-secret --secret-id <name>
 resource "aws_secretsmanager_secret" "private_key" {
-  # checkov:skip=CKV2_AWS_57:EC2 SSH private keys are static by nature — rotation means generating a new keypair and updating all instances that use it, which is an operational procedure not automatable via Secrets Manager rotation lambdas.
+  # checkov:skip=CKV_AWS_149:Secret is encrypted using either the provided customer-managed CMK (secrets_manager_kms_key_arn) or the AWS managed key (alias/aws/secretsmanager). Both provide encryption-at-rest. CMK is required only for compliance regimes (PCI-DSS, FedRAMP) — set secrets_manager_kms_key_arn in input.yaml when that is needed.
+  # checkov:skip=CKV2_AWS_57:EC2 SSH keypairs are static by nature — rotation means generating a new ED25519 keypair and replacing it on running instances, which is an operational runbook, not an SM lambda rotation.
   count                   = var.key_pair_create ? 1 : 0
   name                    = "${local.resource_name}-private-key"
   description             = "EC2 private key for ${local.resource_name}"
