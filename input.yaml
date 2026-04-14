@@ -30,7 +30,7 @@ resources:
   - name: app-assets
     type: s3
     enabled:
-      dev:  true
+      dev:  false
       stg:  true
       prod: true
     config:
@@ -133,7 +133,7 @@ resources:
   - name: image-processor
     type: lambda
     enabled:
-      dev:  true
+      dev:  false
       stg:  true
       prod: true
     config:
@@ -226,7 +226,7 @@ resources:
   - name: api-server
     type: ec2
     enabled:
-      dev:  false
+      dev:  true
       stg:  true
       prod: true
     config:
