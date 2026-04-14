@@ -93,10 +93,25 @@ generate "provider" {
     }
     provider "aws" {
       region = "${local.region}"
+
+      # Hard-stop if TF_ACCOUNT_KEY resolves to the wrong account.
+      # Prevents a misconfigured env var from destroying the wrong environment.
+      allowed_account_ids = ["${local.account_id}"]
+
+      default_tags {
+        tags = ${jsonencode(local.common_tags)}
+      }
     }
     provider "aws" {
       alias  = "us_east_1"
       region = "us-east-1"
+
+      # CloudFront resources must also be guarded against wrong-account applies
+      allowed_account_ids = ["${local.account_id}"]
+
+      default_tags {
+        tags = ${jsonencode(local.common_tags)}
+      }
     }
   TFEOF
 }

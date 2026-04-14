@@ -114,6 +114,58 @@ locals {
   )
 }
 
+# ── Security Response Headers Policy ─────────────────────────────────────────
+# Adds OWASP-recommended HTTP security headers to every CloudFront response.
+# These headers instruct browsers to enforce transport security, prevent
+# clickjacking, block MIME-sniffing, and control referrer information.
+resource "aws_cloudfront_response_headers_policy" "security" {
+  provider = aws.us_east_1
+  name     = "${local.name}-security-headers"
+
+  security_headers_config {
+    # HSTS — force HTTPS for 2 years, include subdomains, preload-eligible
+    strict_transport_security {
+      access_control_max_age_sec = 63072000  # 2 years
+      include_subdomains         = true
+      preload                    = true
+      override                   = true
+    }
+
+    # Prevent MIME-type sniffing (blocks drive-by download attacks)
+    content_type_options {
+      override = true
+    }
+
+    # Clickjacking protection — deny framing from any origin
+    frame_options {
+      frame_option = "DENY"
+      override     = true
+    }
+
+    # Referrer policy — leak no path info cross-origin
+    referrer_policy {
+      referrer_policy = "strict-origin-when-cross-origin"
+      override        = true
+    }
+
+    # XSS auditor hint for legacy browsers
+    xss_protection {
+      mode_block = true
+      protection = true
+      override   = true
+    }
+  }
+
+  # Custom headers — Content-Security-Policy cannot be set in security_headers_config
+  custom_headers_config {
+    items {
+      header   = "Permissions-Policy"
+      value    = "camera=(), microphone=(), geolocation=(), payment=()"
+      override = true
+    }
+  }
+}
+
 # ── CloudFront Distribution ───────────────────────────────────────────────────
 resource "aws_cloudfront_distribution" "this" {
   enabled             = true
@@ -164,6 +216,9 @@ resource "aws_cloudfront_distribution" "this" {
     cached_methods         = var.cached_methods
     compress               = true
 
+    # Security headers applied to every response from this distribution
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+
     forwarded_values {
       query_string = var.forward_query_strings
       headers      = var.forward_headers
@@ -179,6 +234,21 @@ resource "aws_cloudfront_distribution" "this" {
     max_ttl     = var.cache_enabled ? var.max_ttl : 0
   }
 
+  # Return friendly pages for 403/404 from S3 origins instead of leaking XML error responses
+  custom_error_response {
+    error_code            = 403
+    response_code         = 404
+    response_page_path    = "/404.html"
+    error_caching_min_ttl = 10
+  }
+
+  custom_error_response {
+    error_code            = 404
+    response_code         = 404
+    response_page_path    = "/404.html"
+    error_caching_min_ttl = 10
+  }
+
   # Additional cache behaviours (path patterns)
   dynamic "ordered_cache_behavior" {
     for_each = var.cache_behaviors
@@ -189,6 +259,8 @@ resource "aws_cloudfront_distribution" "this" {
       allowed_methods        = ordered_cache_behavior.value.allowed_methods
       cached_methods         = ordered_cache_behavior.value.cached_methods
       compress               = true
+
+      response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
 
       forwarded_values {
         query_string = ordered_cache_behavior.value.forward_query_strings

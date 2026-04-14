@@ -53,10 +53,11 @@ locals {
 }
 
 # ── Key pair ──────────────────────────────────────────────────────────────────
+# ED25519 is smaller, faster, and equally secure to RSA-4096.
+# Supported by AWS EC2 and all modern AMIs (Ubuntu 20.04+, AL2023).
 resource "tls_private_key" "this" {
   count     = var.key_pair_create ? 1 : 0
-  algorithm = "RSA"
-  rsa_bits  = 4096
+  algorithm = "ED25519"
 }
 
 resource "aws_key_pair" "this" {
@@ -170,15 +171,24 @@ locals {
 # ── Launch template ───────────────────────────────────────────────────────────
 resource "aws_launch_template" "this" {
   # name_prefix avoids conflicts if template already exists from a prior run
-  name_prefix   = "${local.resource_name}-lt-"
-  image_id      = local.resolved_ami
-  instance_type = var.instance_type
-  key_name      = local.key_name
+  name_prefix            = "${local.resource_name}-lt-"
+  image_id               = local.resolved_ami
+  instance_type          = var.instance_type
+  key_name               = local.key_name
+  ebs_optimized          = true   # dedicated EBS throughput, no extra cost on most modern instances
 
+  # Detailed CloudWatch monitoring (1-min granularity vs 5-min default)
+  monitoring {
+    enabled = true
+  }
+
+  # IMDSv2 enforced — prevents SSRF-based metadata exfiltration (e.g. CVE-2019-11253)
+  # hop_limit=1 blocks container-to-host credential theft
   metadata_options {
     http_endpoint               = "enabled"
-    http_tokens                 = var.imdsv2_enabled ? "required" : "optional"
+    http_tokens                 = "required"   # always enforce IMDSv2
     http_put_response_hop_limit = 1
+    instance_metadata_tags      = "enabled"    # allows EC2 tags in user-data
   }
 
   network_interfaces {
@@ -199,9 +209,10 @@ resource "aws_launch_template" "this" {
       ebs {
         volume_size           = block_device_mappings.value.size
         volume_type           = block_device_mappings.value.type
-        encrypted             = true
+        encrypted             = true   # always — encryption at rest is non-negotiable
         kms_key_id            = var.ebs_encryption == "kms" && var.ebs_kms_key_arn != "" ? var.ebs_kms_key_arn : null
         delete_on_termination = true
+        throughput            = block_device_mappings.value.type == "gp3" ? 125 : null
       }
     }
   }
@@ -218,12 +229,15 @@ resource "aws_launch_template" "this" {
     tags          = local.tags
   }
 
+  tag_specifications {
+    resource_type = "network-interface"
+    tags          = local.tags
+  }
+
   tags = local.tags
 
   lifecycle {
     create_before_destroy = true
-    # NOTE: latest_version is provider-computed and cannot be ignored.
-    # Using name_prefix instead of name prevents duplicate conflicts on re-run.
   }
 }
 
@@ -240,11 +254,17 @@ resource "aws_instance" "this" {
   tags      = local.tags
 
   lifecycle {
-    # Prevent destroy when Terraform detects a new AMI or launch template version
+    # Prevent replacement when Terraform detects a newer AMI — update via launch template refresh
     ignore_changes = [ami, launch_template]
+
     precondition {
       condition     = var.subnet_id != ""
       error_message = "subnet_id is required for standalone instances (asg_enabled=false)."
+    }
+
+    postcondition {
+      condition     = self.metadata_options[0].http_tokens == "required"
+      error_message = "IMDSv2 (http_tokens=required) must always be enforced on EC2 instances."
     }
   }
 }

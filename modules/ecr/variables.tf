@@ -57,3 +57,13 @@ variable "lambda_integration_enabled" {
   type = bool
   default = false
 }
+
+variable "scan_type" {
+  type        = string
+  default     = "ENHANCED"
+  description = "ECR registry scan type: ENHANCED (Inspector v2, continuous) or BASIC (scan-on-push only)"
+  validation {
+    condition     = contains(["BASIC", "ENHANCED"], var.scan_type)
+    error_message = "scan_type must be 'BASIC' or 'ENHANCED'."
+  }
+}

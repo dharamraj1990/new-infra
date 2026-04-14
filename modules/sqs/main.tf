@@ -85,7 +85,8 @@ data "aws_iam_policy_document" "sqs_policy" {
     resources = [aws_sqs_queue.this.arn]
   }
 
-  # Allow SNS topics to send to this queue (for SNS→SQS fanout)
+  # Allow SNS topics to send to this queue (for SNS→SQS fanout).
+  # ArnEquals is stricter than ArnLike — no wildcard pattern matching allowed.
   dynamic "statement" {
     for_each = length(var.allowed_sns_topic_arns) > 0 ? [1] : []
     content {
@@ -98,7 +99,7 @@ data "aws_iam_policy_document" "sqs_policy" {
       actions   = ["sqs:SendMessage"]
       resources = [aws_sqs_queue.this.arn]
       condition {
-        test     = "ArnLike"
+        test     = "ArnEquals"   # strict — no wildcard matching
         variable = "aws:SourceArn"
         values   = var.allowed_sns_topic_arns
       }
@@ -109,4 +110,51 @@ data "aws_iam_policy_document" "sqs_policy" {
 resource "aws_sqs_queue_policy" "this" {
   queue_url = aws_sqs_queue.this.id
   policy    = data.aws_iam_policy_document.sqs_policy.json
+}
+
+# ── DLQ Policy ────────────────────────────────────────────────────────────────
+# The DLQ needs its own queue policy to allow the main queue to redrive messages
+# and allow operators to read/purge failed messages for debugging.
+data "aws_iam_policy_document" "dlq_policy" {
+  count = var.dlq_enabled ? 1 : 0
+
+  statement {
+    sid    = "AllowAccountAccess"
+    effect = "Allow"
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+    }
+    actions = [
+      "sqs:ReceiveMessage",
+      "sqs:DeleteMessage",
+      "sqs:GetQueueAttributes",
+      "sqs:GetQueueUrl",
+      "sqs:PurgeQueue",
+    ]
+    resources = [aws_sqs_queue.dlq[0].arn]
+  }
+
+  # Allow the main queue to redrive messages into the DLQ
+  statement {
+    sid    = "AllowRedriveFromMainQueue"
+    effect = "Allow"
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+    }
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.dlq[0].arn]
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:SourceArn"
+      values   = [aws_sqs_queue.this.arn]
+    }
+  }
+}
+
+resource "aws_sqs_queue_policy" "dlq" {
+  count     = var.dlq_enabled ? 1 : 0
+  queue_url = aws_sqs_queue.dlq[0].id
+  policy    = data.aws_iam_policy_document.dlq_policy[0].json
 }

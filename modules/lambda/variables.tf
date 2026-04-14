@@ -174,3 +174,27 @@ variable "sqs_batch_size" {
   type    = number
   default = 10
 }
+
+# ── Observability ────────────────────────────────────────────────────────────
+variable "tracing_mode" {
+  type        = string
+  default     = "Active"
+  description = "X-Ray tracing mode: Active (always sample) or PassThrough (respect sampling rules)"
+  validation {
+    condition     = contains(["Active", "PassThrough"], var.tracing_mode)
+    error_message = "tracing_mode must be 'Active' or 'PassThrough'."
+  }
+}
+
+# ── Resilience ───────────────────────────────────────────────────────────────
+variable "dlq_arn" {
+  type        = string
+  default     = ""
+  description = "SQS or SNS ARN to send failed async invocations to. Empty = no DLQ."
+}
+
+variable "reserved_concurrent_executions" {
+  type        = number
+  default     = -1
+  description = "Max concurrent Lambda executions. -1 = unreserved (uses account default). 0 = throttle all."
+}

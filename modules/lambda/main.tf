@@ -54,6 +54,13 @@ resource "aws_iam_role_policy_attachment" "vpc_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
+# X-Ray daemon write access — required for Active tracing
+resource "aws_iam_role_policy_attachment" "xray" {
+  count      = var.iam_role_create ? 1 : 0
+  role       = aws_iam_role.this[0].name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+}
+
 # ── Service access policies ───────────────────────────────────────────────────
 # Each policy is scoped to specific resource ARNs when provided.
 # Falls back to ["*"] only when the ARN list is empty (explicit opt-in to wide access).
@@ -178,17 +185,31 @@ resource "aws_cloudwatch_log_group" "this" {
 resource "aws_lambda_function" "zip" {
   count = local.is_zip ? 1 : 0
 
-  function_name    = local.function_name
-  role             = local.execution_role_arn
-  architectures    = [var.arch]
-  timeout          = var.timeout
-  memory_size      = var.memory_size
-  package_type     = "Zip"
-  runtime          = var.runtime
-  handler          = var.handler
+  function_name                  = local.function_name
+  role                           = local.execution_role_arn
+  architectures                  = [var.arch]
+  timeout                        = var.timeout
+  memory_size                    = var.memory_size
+  package_type                   = "Zip"
+  runtime                        = var.runtime
+  handler                        = var.handler
+  reserved_concurrent_executions = var.reserved_concurrent_executions
   # filename is REQUIRED for Zip type — use provided path or bundled placeholder
   filename         = var.filename != null && var.filename != "" ? var.filename : "${path.module}/placeholder.zip"
   source_code_hash = var.source_code_hash != null ? var.source_code_hash : null
+
+  # X-Ray active tracing — end-to-end distributed tracing across Lambda + downstream calls
+  tracing_config {
+    mode = var.tracing_mode
+  }
+
+  # DLQ for failed async invocations (event-driven failures that Lambda retried and gave up on)
+  dynamic "dead_letter_config" {
+    for_each = var.dlq_arn != "" ? [1] : []
+    content {
+      target_arn = var.dlq_arn
+    }
+  }
 
   dynamic "environment" {
     for_each = length(var.environment_variables) > 0 ? [1] : []
@@ -207,6 +228,7 @@ resource "aws_lambda_function" "zip" {
   depends_on = [
     aws_cloudwatch_log_group.this,
     aws_iam_role_policy_attachment.basic_execution,
+    aws_iam_role_policy_attachment.xray,
   ]
 }
 
@@ -215,13 +237,27 @@ resource "aws_lambda_function" "zip" {
 resource "aws_lambda_function" "image" {
   count = local.is_zip ? 0 : 1
 
-  function_name = local.function_name
-  role          = local.execution_role_arn
-  architectures = [var.arch]
-  timeout       = var.timeout
-  memory_size   = var.memory_size
-  package_type  = "Image"
-  image_uri     = var.image_uri   # REQUIRED for Image type
+  function_name                  = local.function_name
+  role                           = local.execution_role_arn
+  architectures                  = [var.arch]
+  timeout                        = var.timeout
+  memory_size                    = var.memory_size
+  package_type                   = "Image"
+  image_uri                      = var.image_uri   # REQUIRED for Image type
+  reserved_concurrent_executions = var.reserved_concurrent_executions
+
+  # X-Ray active tracing — end-to-end distributed tracing
+  tracing_config {
+    mode = var.tracing_mode
+  }
+
+  # DLQ for failed async invocations
+  dynamic "dead_letter_config" {
+    for_each = var.dlq_arn != "" ? [1] : []
+    content {
+      target_arn = var.dlq_arn
+    }
+  }
 
   dynamic "image_config" {
     for_each = (length(var.image_command) > 0 || length(var.image_entry_point) > 0) ? [1] : []
@@ -249,6 +285,7 @@ resource "aws_lambda_function" "image" {
   depends_on = [
     aws_cloudwatch_log_group.this,
     aws_iam_role_policy_attachment.basic_execution,
+    aws_iam_role_policy_attachment.xray,
   ]
 }
 

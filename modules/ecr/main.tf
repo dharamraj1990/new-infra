@@ -21,6 +21,24 @@ resource "aws_ecr_repository" "this" {
   tags = local.tags
 }
 
+# Enhanced scanning uses Inspector v2 for continuous CVE scanning (vs basic scan-on-push).
+# This is a registry-level setting — one per account, so this resource is idempotent.
+# Enhanced scanning gives continuous vulnerability detection instead of one-shot scans.
+resource "aws_ecr_registry_scanning_configuration" "this" {
+  scan_type = var.scan_type
+
+  dynamic "rule" {
+    for_each = var.scan_type == "ENHANCED" ? [1] : []
+    content {
+      scan_frequency = "CONTINUOUS_SCAN"
+      repository_filter {
+        filter      = "*"
+        filter_type = "WILDCARD"
+      }
+    }
+  }
+}
+
 resource "aws_ecr_lifecycle_policy" "this" {
   repository = aws_ecr_repository.this.name
   policy = jsonencode({
@@ -36,6 +54,9 @@ resource "aws_ecr_lifecycle_policy" "this" {
 data "aws_caller_identity" "current" {}
 
 data "aws_iam_policy_document" "ecr_policy" {
+  # Pull access for explicitly listed principals (or account root as fallback).
+  # NOTE: ecr:GetAuthorizationToken is account-level (resource = *) and must be
+  # granted separately via IAM identity policy — it cannot be set here.
   statement {
     sid    = "AllowPull"
     effect = "Allow"
@@ -43,7 +64,14 @@ data "aws_iam_policy_document" "ecr_policy" {
       type        = "AWS"
       identifiers = length(var.allowed_principal_arns) > 0 ? var.allowed_principal_arns : ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
     }
-    actions = ["ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage", "ecr:BatchCheckLayerAvailability"]
+    actions = [
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:BatchGetImage",
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:DescribeImages",
+      "ecr:DescribeRepositories",
+      "ecr:ListImages",
+    ]
   }
 
   dynamic "statement" {
@@ -52,10 +80,14 @@ data "aws_iam_policy_document" "ecr_policy" {
       sid    = "AllowLambdaPull"
       effect = "Allow"
       principals {
-      type = "Service"
-      identifiers = ["lambda.amazonaws.com"]
-    }
-      actions = ["ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage", "ecr:BatchCheckLayerAvailability"]
+        type        = "Service"
+        identifiers = ["lambda.amazonaws.com"]
+      }
+      actions = [
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage",
+        "ecr:BatchCheckLayerAvailability",
+      ]
     }
   }
 }

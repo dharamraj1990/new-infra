@@ -38,6 +38,17 @@ resource "aws_s3_bucket" "this" {
   tags          = local.tags
 }
 
+# Disable ACLs entirely — bucket owner enforced is the modern security posture.
+# ACLs are legacy; IAM policies + bucket policies are the correct access control.
+# Required by AWS provider v5 to avoid continuous drift detection.
+resource "aws_s3_bucket_ownership_controls" "this" {
+  bucket = aws_s3_bucket.this.id
+
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
+}
+
 resource "aws_s3_bucket_public_access_block" "this" {
   bucket                  = aws_s3_bucket.this.id
   block_public_acls       = true
@@ -87,6 +98,18 @@ resource "aws_s3_bucket_lifecycle_configuration" "this" {
       content {
         days = var.expiry_days
       }
+    }
+
+    # Purge old object versions after 90 days — prevents unbounded storage growth
+    # on versioned buckets when objects are repeatedly overwritten.
+    noncurrent_version_expiration {
+      noncurrent_days = 90
+    }
+
+    # Abort incomplete multipart uploads after 7 days — cleans up orphaned parts
+    # that accrue storage costs but were never completed (e.g. after client crash).
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
     }
   }
 }
