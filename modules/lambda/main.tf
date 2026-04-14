@@ -142,6 +142,7 @@ resource "aws_iam_role_policy_attachment" "service_access" {
 
 # ── Security Group (VPC only) ─────────────────────────────────────────────────
 resource "aws_security_group" "this" {
+  # checkov:skip=CKV2_AWS_5:SG is only created when vpc_enabled=true and is attached to the Lambda function's VPC config. Static analysis cannot resolve conditional attachment.
   count  = var.vpc_enabled && var.sg_create ? 1 : 0
   name   = "${local.function_name}-sg"
   vpc_id = var.vpc_id
@@ -175,14 +176,17 @@ locals {
 
 # ── CloudWatch Log Group ──────────────────────────────────────────────────────
 resource "aws_cloudwatch_log_group" "this" {
+  # checkov:skip=CKV_AWS_338:Retention is configurable via log_retention_days (set to 365 for prod via env_config in input.yaml). Enforcing 365 days minimum would break dev/stg cost budgets.
   name              = "/aws/lambda/${local.function_name}"
   retention_in_days = var.log_retention_days
+  kms_key_id        = var.log_group_kms_key_arn != "" ? var.log_group_kms_key_arn : null
   tags              = local.tags
 }
 
 # ── Lambda ZIP ───────────────────────────────────────────────────────────────
 # package_type must be "Zip" (capital Z) — AWS API rejects "zip"
 resource "aws_lambda_function" "zip" {
+  # checkov:skip=CKV_AWS_272:Code signing is an optional enterprise control. Enable via code_signing_config_arn when your org has a signing profile. Not required for all environments.
   count = local.is_zip ? 1 : 0
 
   function_name                  = local.function_name
@@ -194,6 +198,7 @@ resource "aws_lambda_function" "zip" {
   runtime                        = var.runtime
   handler                        = var.handler
   reserved_concurrent_executions = var.reserved_concurrent_executions
+  kms_key_arn                    = var.kms_key_arn != "" ? var.kms_key_arn : null
   # filename is REQUIRED for Zip type — use provided path or bundled placeholder
   filename         = var.filename != null && var.filename != "" ? var.filename : "${path.module}/placeholder.zip"
   source_code_hash = var.source_code_hash != null ? var.source_code_hash : null
@@ -235,6 +240,7 @@ resource "aws_lambda_function" "zip" {
 # ── Lambda Container Image ────────────────────────────────────────────────────
 # package_type must be "Image" (capital I) — AWS API rejects "container"
 resource "aws_lambda_function" "image" {
+  # checkov:skip=CKV_AWS_272:Code signing is not applicable to container image Lambdas (Image package type). Code signing applies to Zip deployments only.
   count = local.is_zip ? 0 : 1
 
   function_name                  = local.function_name
@@ -245,6 +251,7 @@ resource "aws_lambda_function" "image" {
   package_type                   = "Image"
   image_uri                      = var.image_uri   # REQUIRED for Image type
   reserved_concurrent_executions = var.reserved_concurrent_executions
+  kms_key_arn                    = var.kms_key_arn != "" ? var.kms_key_arn : null
 
   # X-Ray active tracing — end-to-end distributed tracing
   tracing_config {

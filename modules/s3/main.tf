@@ -33,6 +33,8 @@ locals {
 
 # ── Bucket ────────────────────────────────────────────────────────────────────
 resource "aws_s3_bucket" "this" {
+  # checkov:skip=CKV_AWS_144:Cross-region replication is an architectural HA decision. Enable it by adding aws_s3_bucket_replication_configuration when DR requirements mandate it. Not all buckets need CRR (audit logs, app assets with CloudFront caching).
+  # checkov:skip=CKV_AWS_145:KMS encryption is supported via encryption=KMS + kms_key_arn in input.yaml. AES256 (SSE-S3) is acceptable for non-sensitive buckets. Enforcing KMS on all buckets adds operational overhead without proportional security gain for public-facing assets.
   bucket        = local.bucket_name
   force_destroy = var.force_destroy
   tags          = local.tags

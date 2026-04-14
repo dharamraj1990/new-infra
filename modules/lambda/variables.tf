@@ -175,6 +175,19 @@ variable "sqs_batch_size" {
   default = 10
 }
 
+# ── Encryption ───────────────────────────────────────────────────────────────
+variable "log_group_kms_key_arn" {
+  type        = string
+  default     = ""
+  description = "KMS CMK ARN for CloudWatch log group encryption. Empty = no encryption (CKV_AWS_158)."
+}
+
+variable "kms_key_arn" {
+  type        = string
+  default     = ""
+  description = "KMS CMK ARN for Lambda environment variable encryption at rest (CKV_AWS_173). Empty = no additional encryption."
+}
+
 # ── Observability ────────────────────────────────────────────────────────────
 variable "tracing_mode" {
   type        = string

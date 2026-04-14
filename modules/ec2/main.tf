@@ -74,10 +74,12 @@ resource "aws_key_pair" "this" {
 # If secret already exists (e.g. scheduled for deletion), restore it first:
 #   aws secretsmanager restore-secret --secret-id <name>
 resource "aws_secretsmanager_secret" "private_key" {
+  # checkov:skip=CKV2_AWS_57:EC2 SSH private keys are static by nature — rotation means generating a new keypair and updating all instances that use it, which is an operational procedure not automatable via Secrets Manager rotation lambdas.
   count                   = var.key_pair_create ? 1 : 0
   name                    = "${local.resource_name}-private-key"
   description             = "EC2 private key for ${local.resource_name}"
   recovery_window_in_days = 7
+  kms_key_id              = var.secrets_manager_kms_key_arn != "" ? var.secrets_manager_kms_key_arn : "alias/aws/secretsmanager"
   tags                    = local.tags
 }
 
@@ -93,6 +95,7 @@ locals {
 
 # ── Security group ────────────────────────────────────────────────────────────
 resource "aws_security_group" "this" {
+  # checkov:skip=CKV2_AWS_5:SG is attached via the launch_template network_interfaces block. Static analysis cannot resolve this reference across resources.
   count       = var.sg_create ? 1 : 0
   name        = "${local.resource_name}-sg"
   description = "Security group for ${local.resource_name}"
@@ -109,12 +112,17 @@ resource "aws_security_group" "this" {
     }
   }
 
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "Allow all outbound"
+  # Explicit egress — default is HTTPS+DNS only (not 0.0.0.0/0 to all ports).
+  # Override via egress_rules in input.yaml if the workload needs broader outbound.
+  dynamic "egress" {
+    for_each = var.egress_rules
+    content {
+      from_port   = egress.value.from_port
+      to_port     = egress.value.to_port
+      protocol    = egress.value.protocol
+      cidr_blocks = egress.value.cidr_blocks
+      description = egress.value.description
+    }
   }
 
   tags = merge(local.tags, { Name = "${local.resource_name}-sg" })
@@ -243,6 +251,11 @@ resource "aws_launch_template" "this" {
 
 # ── Standalone instance ───────────────────────────────────────────────────────
 resource "aws_instance" "this" {
+  # checkov:skip=CKV_AWS_135:ebs_optimized is set in the launch_template — Checkov cannot follow launch template inheritance on aws_instance resources.
+  # checkov:skip=CKV_AWS_126:Detailed monitoring (1-min metrics) is enabled in the launch_template monitoring block.
+  # checkov:skip=CKV_AWS_8:EBS encryption is enforced in the launch_template block_device_mappings (encrypted=true on every volume).
+  # checkov:skip=CKV_AWS_79:IMDSv2 (http_tokens=required) is enforced in the launch_template metadata_options block.
+  # checkov:skip=CKV2_AWS_41:IAM instance profile is set in launch_template iam_instance_profile block — static analysis cannot resolve this.
   count = var.asg_enabled ? 0 : 1
 
   launch_template {

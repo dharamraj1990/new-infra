@@ -20,6 +20,8 @@ resource "aws_cloudfront_origin_access_control" "s3" {
 # When waf_create = true, creates a managed-rule WAF ACL in us-east-1
 # (CloudFront WAF must be in us-east-1 regardless of distribution region)
 resource "aws_wafv2_web_acl" "this" {
+  # checkov:skip=CKV2_AWS_31:WAF logging is configured in aws_wafv2_web_acl_logging_configuration below.
+  # checkov:skip=CKV2_AWS_47:AWSManagedRulesKnownBadInputsRuleSet (which covers Log4j) is included in the default waf_managed_rules variable. Checkov cannot resolve dynamic for_each blocks in managed_rule_group_statement.
   count    = var.waf_enabled && var.waf_create ? 1 : 0
   provider = aws.us_east_1
   name     = "${local.name}-waf"
@@ -105,6 +107,33 @@ resource "aws_wafv2_web_acl" "this" {
   tags = local.tags
 }
 
+# ── WAF Logging ──────────────────────────────────────────────────────────────
+# CloudWatch log group for WAF — name must start with "aws-waf-logs-"
+resource "aws_cloudwatch_log_group" "waf" {
+  # checkov:skip=CKV_AWS_158:WAF access logs are operational data, not sensitive. KMS encryption adds cost with minimal security benefit for log metadata.
+  # checkov:skip=CKV_AWS_338:WAF logs require shorter retention than application logs. 90 days is sufficient for security investigations.
+  count             = var.waf_enabled && var.waf_create ? 1 : 0
+  provider          = aws.us_east_1
+  name              = "aws-waf-logs-${local.name}"
+  retention_in_days = 90
+  tags              = local.tags
+}
+
+resource "aws_wafv2_web_acl_logging_configuration" "this" {
+  count                   = var.waf_enabled && var.waf_create ? 1 : 0
+  provider                = aws.us_east_1
+  resource_arn            = aws_wafv2_web_acl.this[0].arn
+  log_destination_configs = [aws_cloudwatch_log_group.waf[0].arn]
+
+  # Redact sensitive headers from WAF logs — Authorization and Cookie contain credentials
+  redacted_fields {
+    single_header { name = "authorization" }
+  }
+  redacted_fields {
+    single_header { name = "cookie" }
+  }
+}
+
 locals {
   # Use provided WAF ACL ID, or the one we just created
   waf_acl_id = (
@@ -168,6 +197,11 @@ resource "aws_cloudfront_response_headers_policy" "security" {
 
 # ── CloudFront Distribution ───────────────────────────────────────────────────
 resource "aws_cloudfront_distribution" "this" {
+  # checkov:skip=CKV_AWS_174:TLSv1.2_2021 is enforced when acm_certificate_arn is provided. The CloudFront default certificate is only used during initial setup before a custom domain is configured — set acm_certificate_arn in input.yaml for production.
+  # checkov:skip=CKV2_AWS_42:Custom SSL certificate is configured via acm_certificate_arn variable. Set it in input.yaml for production. Default certificate is intentionally allowed for pre-production use.
+  # checkov:skip=CKV_AWS_310:Origin failover requires a secondary origin to be defined. This is an architectural decision — configure origins with failover pairs in input.yaml when high availability is required.
+  # checkov:skip=CKV_AWS_374:Geo restriction is configurable via geo_restriction_type and geo_restriction_locations variables. Default is 'none' to support global deployments.
+  # checkov:skip=CKV2_AWS_47:AWSManagedRulesKnownBadInputsRuleSet (Log4j protection) is in the default waf_managed_rules. Checkov cannot resolve dynamic for_each blocks referencing managed rule groups.
   enabled             = true
   is_ipv6_enabled     = true
   comment             = local.name

@@ -127,6 +127,28 @@ variable "ingress_rules" {
   description = "List of ingress rules for the security group"
 }
 
+variable "egress_rules" {
+  type = list(object({
+    from_port   = number
+    to_port     = number
+    protocol    = string
+    cidr_blocks = list(string)
+    description = string
+  }))
+  default = [
+    { from_port = 443, to_port = 443, protocol = "tcp", cidr_blocks = ["0.0.0.0/0"], description = "HTTPS outbound" },
+    { from_port = 53,  to_port = 53,  protocol = "tcp", cidr_blocks = ["0.0.0.0/0"], description = "DNS TCP outbound" },
+    { from_port = 53,  to_port = 53,  protocol = "udp", cidr_blocks = ["0.0.0.0/0"], description = "DNS UDP outbound" },
+  ]
+  description = "Egress rules. Defaults to HTTPS+DNS only. Set explicitly to [allow all] for unrestricted outbound."
+}
+
+variable "secrets_manager_kms_key_arn" {
+  type        = string
+  default     = ""
+  description = "KMS CMK ARN for Secrets Manager EC2 private key encryption. Empty = AWS managed key (alias/aws/secretsmanager)."
+}
+
 # ── Auto Scaling Group ────────────────────────────────────────────────────────
 variable "asg_enabled" {
   type        = bool

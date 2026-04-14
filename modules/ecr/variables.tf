@@ -42,8 +42,13 @@ variable "max_image_count" {
   default = 10
 }
 variable "encryption" {
-  type = string
-  default = "AES256"
+  type    = string
+  default = "KMS"
+  description = "ECR encryption: KMS (customer or AWS managed key) or AES256. KMS is required by CKV_AWS_136."
+  validation {
+    condition     = contains(["KMS", "AES256"], var.encryption)
+    error_message = "encryption must be 'KMS' or 'AES256'."
+  }
 }
 variable "kms_key_arn" {
   type = string
