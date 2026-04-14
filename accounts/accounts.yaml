@@ -22,7 +22,7 @@ dev:
   project_name: myapp
   account_id:   "533269020590"     # replace with real dev account ID
   role_name:    admin-role         # name of the IAM role in this account that github-oidc-role assumes
-  region:       ap-south-1
+  region:       us-east-1
   owner:        platform-team
   cost_center:  "CC-DEV-001"
 
